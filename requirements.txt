@@ -6,3 +6,4 @@ datetime
 gspread
 google-auth
 openpyxl
+scipy
