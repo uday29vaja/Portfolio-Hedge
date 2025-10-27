@@ -1,6 +1,7 @@
 # web_app_local_dynamic.py - Portfolio Beta & Hedging with Custom Volatility & Risk-Free Rate
 import json
 import math
+import os
 import time
 import requests
 import streamlit as st
@@ -249,9 +250,9 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     else:
         annual_strike = math.floor(monthly_strike / 100) * 100
 
-    monthly_T = (monthly_expiry_date - today).days / 365
-    quarterly_T = (quarterly_expiry_date - today).days / 365
-    annual_T = (annual_expiry_date  - today).days / 365
+    monthly_T = round( (monthly_expiry_date - today).days / 365 ,2)
+    quarterly_T = round( (quarterly_expiry_date  - today).days / 365 ,2)    
+    annual_T = round( (annual_expiry_date  - today).days / 365 ,2)
 
 
     Monthly_put_premium = fetch_put_premium("NIFTY", monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
@@ -260,9 +261,9 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     print("Monthly Put Premium:", Monthly_put_premium)
     print("Quarterly Put Premium:", quarterly_put_premium)
     print("Annual Put Premium:", annual_put_premium)    
-    monthly_sigma = get_implied_volatility(monthly_strike,monthly_strike,monthly_T,r,Monthly_put_premium)  # Assumed volatility
-    quarterly_sigma = get_implied_volatility(monthly_strike,quarterly_strike,quarterly_T,r,quarterly_put_premium)  # Assumed volatility
-    annual_sigma = get_implied_volatility(monthly_strike,annual_strike,annual_T,r,annual_put_premium)  # Assumed volatility
+    monthly_sigma = get_implied_volatility(nifty_price,monthly_strike,monthly_T,r,Monthly_put_premium)  # Assumed volatility
+    quarterly_sigma = get_implied_volatility(nifty_price,quarterly_strike,quarterly_T,r,quarterly_put_premium)  # Assumed volatility
+    annual_sigma = get_implied_volatility(nifty_price,annual_strike,annual_T,r,annual_put_premium)  # Assumed volatility
     print("Monthly Implied Volatility:", monthly_sigma)
     print("Quarterly Implied Volatility:", quarterly_sigma)
     print("Annual Implied Volatility:", annual_sigma)
@@ -283,16 +284,16 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
 
 
     print("----------------------------------------------------------------------------")
-    Monthly_Annualised_premium = black_scholes_put_price(monthly_strike, monthly_strike, 1, r, monthly_sigma)
-    Quarterly_Annualised_premium = black_scholes_put_price(monthly_strike, quarterly_strike, 1, r, quarterly_sigma)
-    Annual_Annualised_premium = black_scholes_put_price(monthly_strike, annual_strike, 1, r, annual_sigma)
+    Monthly_Annualised_premium = black_scholes_put_price(nifty_price, monthly_strike, 1, r, monthly_sigma)
+    Quarterly_Annualised_premium = black_scholes_put_price(nifty_price, quarterly_strike, 1, r, quarterly_sigma)
+    Annual_Annualised_premium = black_scholes_put_price(nifty_price, annual_strike, 1, r, annual_sigma)
     print("Monthly Annualised Premium (%):", Monthly_Annualised_premium)
     print("Quarterly Annualised Premium (%):", Quarterly_Annualised_premium)    
     print("Annual Annualised Premium (%):", Annual_Annualised_premium)  
 
-    monthly_annualized = (Monthly_Annualised_premium / monthly_strike) *100  #(monthly_cost / total_value) * (365 / (monthly_T * 365)) * 100
-    quarterly_annualized = (Quarterly_Annualised_premium / monthly_strike) *100 
-    annual_annualized = (Annual_Annualised_premium / annual_strike) *100
+    monthly_annualized = ((Monthly_Annualised_premium - max(monthly_strike - nifty_price,0)) / monthly_strike) *100  #(monthly_cost / total_value) * (365 / (monthly_T * 365)) * 100
+    quarterly_annualized = ((Quarterly_Annualised_premium - max(quarterly_strike - nifty_price,0)) / quarterly_strike) *100   #(quarterly_cost / total_value) * (365 / (quarterly_T * 365)) * 100
+    annual_annualized =  ((Annual_Annualised_premium - max(annual_strike - nifty_price,0)) / annual_strike) *100   #(annual_cost / total_value) * (365 / (annual_T * 365)) * 100
     print("Monthly Annualized Cost (%):", monthly_annualized)
     print("Quarterly Annualized Cost (%):", quarterly_annualized)   
     print("Annual Annualized Cost (%):", annual_annualized)
@@ -339,6 +340,12 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
         "monthly_annualized_cost": monthly_annualized,
         "quarterly_annualized_cost": quarterly_annualized,
         "annual_annualized_cost": annual_annualized,
+        "monthly_lots": monthly_lot,
+        "quarterly_lots": quarterly_lot,    
+        "annual_lots": annual_lot,
+        "monthly_premium": Monthly_put_premium,
+        "quarterly_premium": quarterly_put_premium, 
+        "annual_premium": annual_put_premium,
         "scenario_analysis": scenario_analysis
     }
 
@@ -396,6 +403,8 @@ input_method = st.radio("Choose input method:", ["Manual Entry", "CSV Upload"])
 portfolio_data = None
 
 if input_method == "Manual Entry":
+    
+    st.subheader("Enter Stocks Manually")
     num_stocks = st.number_input("Number of stocks:", min_value=1, max_value=20, value=3)
     stocks = []
     for i in range(num_stocks):
@@ -410,111 +419,196 @@ if input_method == "Manual Entry":
     st.dataframe(portfolio_data)
 
 else:
+    st.subheader("Upload Portfolio CSV")
+    st.info("Your CSV should have columns: SYMBOL, AMOUNT")
+    
     uploaded_file = st.file_uploader("Choose CSV file", type=['csv'])
     if uploaded_file is not None:
         portfolio_data = pd.read_csv(uploaded_file)
         st.write("Uploaded Portfolio:")
         st.dataframe(portfolio_data)
 
+
+
 # Hedge Calculation
 if portfolio_data is not None:
     st.header("2. Hedge Settings & Black-Scholes Parameters")
-    hedge_percentage = st.selectbox("Hedge Percentage", [100, 75, 50, 25], index=0)
+     # Add Hedge Percentage Selection
+    st.subheader("🛡️ Hedge Protection Level")
     col1, col2 = st.columns(2)
     with col1:
-        r = st.number_input("Risk-Free Rate (%)", min_value=0.0, max_value=20.0, value=7.0) / 100
-    with col2:
-        sigma = st.number_input("Volatility (%)", min_value=0.0, max_value=200.0, value=25.0) / 100
-
-    if st.button("🚀 Calculate Beta & Hedging"):
-        total_value = portfolio_data["AMOUNT"].sum()
-        portfolio_data["WEIGHT"] = portfolio_data["AMOUNT"] / total_value
-
-        # Download index series
-        index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
-        betas = []
-        for sym in portfolio_data["SYMBOL"]:
-            _, beta = get_stock_beta(sym, index_series)
-            betas.append(beta)
-        portfolio_data["BETA"] = betas
-        portfolio_data["WEIGHTED_BETA"] = portfolio_data["WEIGHT"] * portfolio_data["BETA"]
-        portfolio_beta = portfolio_data["WEIGHTED_BETA"].sum()
-
-        # Local Hedging
-        hedging_data = calculate_hedging(portfolio_beta, total_value, hedge_percentage)
-
-        # Display Metrics
-        st.subheader("🛡️ Protection Details")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Value", f"₹{total_value:,.2f}")
-        col2.metric("Hedge %", f"{hedge_percentage}%")
-        col3.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
-        col4.metric("Hedge Exposure", f"₹{total_value*portfolio_beta*(hedge_percentage/100):,.2f}")
-
-       # Hedging Comparison
-        st.subheader("💰 Period Comparison - Monthly vs Quarterly vs Annual")
-
-        # Create comparison dataframe
-        compare_df = pd.DataFrame([
-            {
-                "Period": "Monthly",
-                "Strike (₹)": hedging_data["monthly_put_strike"],
-                "Expiry": hedging_data["monthly_expiry"],
-                "Cost (₹)": round(hedging_data["monthly_cost"], 2),
-                "Annualized Cost (%)": round(hedging_data["monthly_annualized_cost"], 2),
-            },
-            {
-                "Period": "Quarterly",
-                "Strike (₹)": hedging_data["quarterly_put_strike"],
-                "Expiry": hedging_data["quarterly_expiry"],
-                "Cost (₹)": round(hedging_data["quarterly_cost"], 2),
-                "Annualized Cost (%)": round(hedging_data["quarterly_annualized_cost"], 2),
-            },
-            {
-                "Period": "Annual",
-                "Strike (₹)": hedging_data["annual_put_strike"],
-                "Expiry": hedging_data["annual_expiry"],
-                "Cost (₹)": round(hedging_data["annual_cost"], 2),
-                "Annualized Cost (%)": round(hedging_data["annual_annualized_cost"], 2),
-            }
-        ])
-
-        # Highlight the lowest cost period for easy visual comparison
-        def highlight_lowest_cost(row):
-            color = 'background-color: #d1ffd1' if row.name == compare_df["Cost (₹)"].idxmin() else ''
-            return [color] * len(row)
-
-        st.dataframe(
-            compare_df.style.format({
-                "Cost (₹)": "₹{:,.0f}",
-                "Annualized Cost (%)": "{:.2f}%"
-            }).apply(highlight_lowest_cost, axis=1)
+        hedge_percentage = st.selectbox(
+            "How much portfolio do you want to hedge?",
+            [100, 75, 50, 25],
+            index=0,
+            help="Select the percentage of your portfolio exposure you want to protect"
         )
+        st.write(f"**Selected: {hedge_percentage}% protection**")
+    
+    with col2:
+        st.info(f"""
+        **Hedge Percentage Guide:**
+        - **100%**: Full protection (most expensive)
+        - **75%**: Balanced protection
+        - **50%**: Moderate protection  
+        - **25%**: Basic protection (least expensive)
+        """)
 
-        # Side-by-side key metrics summary
-        st.subheader("📊 Quick Period Stats")
-        col_m, col_q, col_a = st.columns(3)
+    if st.button("🚀 Calculate Beta & Hedging", type="primary"):
+        if "AMOUNT" not in portfolio_data.columns:
+            st.error("❌ Portfolio must have 'AMOUNT' column")
+        else:
+            try:
+                # Convert AMOUNT to numbers
+                portfolio_data["AMOUNT"] = pd.to_numeric(portfolio_data["AMOUNT"], errors='coerce')
+                
+                if portfolio_data["AMOUNT"].isna().any():
+                    st.error("❌ Some AMOUNT values are not valid numbers.")
+                else:
+                    with st.spinner("📊 Calculating betas and advanced hedging costs..."):
+                        # Calculate weights and beta
+                        total_amount = portfolio_data["AMOUNT"].sum()
+                        if total_amount == 0:
+                            st.error("❌ Total portfolio amount cannot be zero")
+                        else:
+                            portfolio_data["WEIGHT"] = portfolio_data["AMOUNT"] / total_amount
 
-        col_m.metric("Monthly Cost (₹)", f"{hedging_data['monthly_cost']:,.0f}", 
-                    f"{hedging_data['monthly_annualized_cost']:.2f}% Annualized")
-        col_q.metric("Quarterly Cost (₹)", f"{hedging_data['quarterly_cost']:,.0f}", 
-                    f"{hedging_data['quarterly_annualized_cost']:.2f}% Annualized")
-        col_a.metric("Annual Cost (₹)", f"{hedging_data['annual_cost']:,.0f}", 
-                    f"{hedging_data['annual_annualized_cost']:.2f}% Annualized")
+                            # Download index data and calculate beta
+                            index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
+                            
+                            if index_series is None or index_series.empty:
+                                st.error("❌ Failed to download index data.")
+                            else:
+                                index_series = index_series.dropna().sort_index()
 
-        # Scenario Analysis
-        st.subheader("🎯 Scenario Analysis")
-        scenario_df = pd.DataFrame(hedging_data["scenario_analysis"])
-        st.dataframe(scenario_df)
+                                # Calculate betas
+                                betas = []
+                                for sym in portfolio_data["SYMBOL"]:
+                                    symbol, beta = get_stock_beta(sym, index_series)
+                                    betas.append((symbol, beta))
+                                
+                                # Merge results
+                                beta_df = pd.DataFrame(betas, columns=["SYMBOL", "BETA"])
+                                merged = pd.merge(portfolio_data, beta_df, on="SYMBOL", how="left")
+                                merged["WEIGHTED_BETA"] = merged["WEIGHT"] * merged["BETA"]
+                                portfolio_beta = merged["WEIGHTED_BETA"].sum()
 
-        # Download Options
-        st.subheader("📥 Download Results")
-        csv = portfolio_data.to_csv(index=False)
-        st.download_button("Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
+                                # Local Hedging
+                                hedging_data = calculate_hedging(portfolio_beta, total_amount, hedge_percentage)
 
-        excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_value, hedge_percentage)
-        buffer = io.BytesIO()
-        excel_wb.save(buffer)
-        buffer.seek(0)
-        st.download_button("Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                                # Display Results
+                                st.header("3. Advanced Hedging Results")
+                                st.success("✅ Calculation Complete!")
+                                
+                                # Protection Level Info
+                                st.subheader("🛡️ Protection Details")
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("Total Portfolio Value", f"₹{total_amount:,.2f}")
+                                with col2:
+                                    st.metric("Hedge Percentage", f"{hedge_percentage}%")
+                                with col3:
+                                    st.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
+                                with col4:
+                                    st.metric("Hedge Exposure", f"₹{total_amount * portfolio_beta * (hedge_percentage/100):,.2f}")
+                                
+                                # hedging cost metrics
+                                st.subheader("💰 Hedging Costs & Details")
+
+                                col1, col2, col3 = st.columns(3)
+
+                                # 🗓️ Monthly
+                                with col1:
+                                    st.markdown("#### 🗓️ Monthly")
+                                    st.metric("Put Strike (₹)", f"{hedging_data['monthly_put_strike']:,}")
+                                    st.metric("Expiry", hedging_data['monthly_expiry'])
+                                    st.metric("Cost", f"₹{hedging_data['monthly_cost']:,.2f}")
+                                    st.metric("Annualized Cost %", f"{hedging_data['monthly_annualized_cost']:.2f}%")
+                                    st.metric("Lots Required", hedging_data['monthly_lots'])
+                                    st.metric("Premium per Lot", f"₹{hedging_data['monthly_premium']}")
+                                
+                                # 📅 Quarterly
+                                with col2:
+                                    st.markdown("#### 📅 Quarterly")
+                                    st.metric("Put Strike (₹)", f"{hedging_data['quarterly_put_strike']:,}")
+                                    st.metric("Expiry", hedging_data['quarterly_expiry'])
+                                    st.metric("Cost", f"₹{hedging_data['quarterly_cost']:,.2f}")
+                                    st.metric("Annualized Cost %", f"{hedging_data['quarterly_annualized_cost']:.2f}%")
+                                    st.metric("Lots Required", hedging_data['quarterly_lots'])
+                                    st.metric("Premium per Lot", f"₹{hedging_data['quarterly_premium']}")
+                                                            
+                                # 🗓️ Annual
+                                with col3:
+                                    st.markdown("#### 🗓️ Annual")
+                                    st.metric("Put Strike (₹)", f"{hedging_data['annual_put_strike']:,}")
+                                    st.metric("Expiry", hedging_data['annual_expiry'])
+                                    st.metric("Cost", f"₹{hedging_data['annual_cost']:,.2f}")
+                                    st.metric("Annualized Cost %", f"{hedging_data['annual_annualized_cost']:.2f}%")
+                                    st.metric("Lots Required", hedging_data['annual_lots'])
+                                    st.metric("Premium per Lot", f"₹{hedging_data['annual_premium']}")
+
+
+                                # Portfolio Breakdown
+                                st.subheader("📈 Portfolio Breakdown")
+                                st.dataframe(merged)
+
+                                # Scenario Analysis
+                                if hedging_data['scenario_analysis']:
+                                    st.subheader("🎯 Scenario Analysis")
+                                    scenario_df = pd.DataFrame(hedging_data['scenario_analysis'])
+                                    
+                                    # Display by period
+                                    for period in ['Monthly', 'Quarterly', 'Annual']:
+                                        period_data = scenario_df[scenario_df['period'] == period]
+                                        if not period_data.empty:
+                                            st.write(f"**{period} Hedging Scenarios:**")
+                                            display_data = period_data.drop('period', axis=1)
+                                            st.dataframe(display_data, use_container_width=True)
+                                else:
+                                    st.info("📊 Scenario analysis data will be available when calculations are complete")
+                                
+                                # Download Options
+                                st.subheader("📥 Download Results")
+                                csv = portfolio_data.to_csv(index=False)
+                                st.download_button("Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
+
+                                excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage)
+                                buffer = io.BytesIO()
+                                excel_wb.save(buffer)
+                                buffer.seek(0)
+                                st.download_button("Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
+                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            except Exception as e:
+                st.error(f"❌ Error during calculation: {e}")   
+
+
+
+# -------------------------------
+# Equity Symbols Reference
+st.header("📋 Equity Symbols Reference")
+
+try:
+    # Check if file exists and load it
+    if os.path.exists("EQUITY_L.csv"):
+        scrips_df = pd.read_csv("EQUITY_L.csv")
+        total_symbols = len(scrips_df)
+        
+        st.success(f"**{total_symbols} equity symbols available**")
+        st.write("Reference list of all available trading symbols")
+        
+        # Download option
+        with open("EQUITY_L.csv", "rb") as file:
+            file_bytes = file.read()
+        
+        st.download_button(
+            label="📥 Download Equity Symbols (CSV)",
+            data=file_bytes,
+            file_name="EQUITY_Symbols.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("Equity symbols file not found - download available when file is present")
+
+except Exception as e:
+    st.info("Equity reference data will be available when the symbols file is present")
+
