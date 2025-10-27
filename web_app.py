@@ -1,4 +1,8 @@
 # web_app_local_dynamic.py - Portfolio Beta & Hedging with Custom Volatility & Risk-Free Rate
+import json
+import math
+import time
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,7 +12,7 @@ import io
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from scipy.stats import norm
-
+from math import log, sqrt, exp
 # -------------------------------
 # Config
 # -------------------------------
@@ -56,31 +60,242 @@ def get_stock_beta(symbol, index_series):
     return symbol, beta
 
 def black_scholes_put_price(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0:
-        return max(K - S, 0)
-    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    P = K*np.exp(-r*T)*norm.cdf(-d2) - S*norm.cdf(-d1)
-    return P
+    d1 = (log(S/K) + (r + 0.5*sigma**2)*T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    return K * exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-def calculate_hedging(portfolio_beta, total_value, hedge_percentage, r, sigma):
+
+# 🔹 Common utility
+def get_last_tuesday(year, month):
+    """Return the last Tuesday of a given month."""
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+
+    last_day = next_month - timedelta(days=1)
+    while last_day.weekday() != 1:  # Tuesday = 1
+        last_day -= timedelta(days=1)
+    return last_day
+# 🔹 Monthly expiry
+def get_monthly_expiry(current_date=None):
+    """Get last Tuesday of current month (Monthly expiry).
+       If expiry is today or within 1 day, return next month's expiry."""
+    current_date = current_date or datetime.now()
+    expiry_date = get_last_tuesday(current_date.year, current_date.month)
+
+    # Calculate day difference
+    diff_days = (expiry_date.date() - current_date.date()).days
+
+    # If expiry is today (0) or tomorrow (1), roll to next month
+    if diff_days <= 1:
+        next_month = current_date.month + 1
+        year = current_date.year + (1 if next_month > 12 else 0)
+        next_month = (next_month - 1) % 12 + 1  # wrap around
+        expiry_date = get_last_tuesday(year, next_month)
+
+    return expiry_date
+
+
+# 🔹 Quarterly expiry
+def get_quarterly_expiry(current_date=None):
+    """Get last Tuesday of current or next quarterly month (Mar, Jun, Sep, Dec). 
+       If today is expiry, return next quarter."""
+    current_date = current_date or datetime.now()
+    month = current_date.month
+
+    # Determine current quarter end month
+    if month <= 3:
+        expiry_month = 3
+    elif month <= 6:
+        expiry_month = 6
+    elif month <= 9:
+        expiry_month = 9
+    else:
+        expiry_month = 12
+
+    expiry_date = get_last_tuesday(current_date.year, expiry_month)
+
+    # If expiry is today or already passed, go to next quarter
+    if expiry_date.date() <= current_date.date():
+        if expiry_month == 12:
+            expiry_month = 3
+            year = current_date.year + 1
+        else:
+            expiry_month += 3
+            year = current_date.year
+        expiry_date = get_last_tuesday(year, expiry_month)
+
+    return expiry_date
+
+
+# 🔹 Annual expiry
+def get_annual_expiry(current_date=None):
+    """Get last Tuesday of December (Annual expiry). 
+       If today is expiry, return next year's expiry."""
+    current_date = current_date or datetime.now()
+    year = current_date.year
+    expiry_date = get_last_tuesday(year, 12)
+
+    # If expiry is today or already passed, take next year's
+    if expiry_date.date() <= current_date.date():
+        expiry_date = get_last_tuesday(year + 1, 12)
+
+    return expiry_date
+
+def get_implied_volatility(S, K, T, r, market_price, tol=1e-6, max_iter=100):
+    print("Calculating Implied Volatility...", S, K, T, r, market_price)
+    sigma = 0.2  # initial guess
+    for i in range(max_iter):
+        price = black_scholes_put_price(S, K, T, r, sigma)
+        d1 = (log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+        vega = S * norm.pdf(d1) * sqrt(T)
+        diff = market_price - price
+        if abs(diff) < tol:
+            return sigma
+        sigma += diff / vega
+        sigma = max(sigma, 0.001)
+    return sigma
+# --- Step 2: Fetch NSE NIFTY put premium ---
+def fetch_put_premium(symbol, strike_price, expiry_date):
+    print(f"Fetching PUT premium for {symbol} Strike: {strike_price} Expiry: {expiry_date}")
+    url_home = "https://www.nseindia.com"
+    url_api = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/127.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/option-chain",
+        "Connection": "keep-alive",
+    }
+
+    session = requests.Session()
+
+    try:
+        # Step 1: Get session cookies
+        home_resp = session.get(url_home, headers=headers, timeout=10)
+        if home_resp.status_code != 200:
+            print(f"❌ Home page failed: {home_resp.status_code}")
+            return None
+
+        time.sleep(1)
+
+        # Step 2: Fetch Option Chain data
+        resp = session.get(url_api, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            print(f"❌ Option chain failed: {resp.status_code}")
+            return None
+
+        # Step 3: Let requests auto-handle gzip/br decompression
+        text_data = resp.text.strip()
+
+        if not text_data or not text_data.startswith("{"):
+            print("❌ Invalid or empty JSON response")
+            print(text_data[:200])
+            return None
+
+        data = json.loads(text_data)
+
+        expiry_str = expiry_date.upper()
+
+        for record in data.get("records", {}).get("data", []):
+            pe = record.get("PE")
+            if (
+                pe
+                and pe.get("strikePrice") == strike_price
+                and pe.get("expiryDate", "").upper() == expiry_str
+            ):
+                last_price = pe.get("lastPrice")
+                print(f"✅ Found {symbol} PUT {strike_price} @ {expiry_str}: {last_price}")
+                return last_price
+
+        print(f"⚠️ No match found for {symbol} PUT {strike_price} @ {expiry_str}")
+        return None
+
+    except Exception as e:
+        print("❌ Error fetching JSON:", e)
+        return None
+
+
+def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
+    r = 0.06  # Risk-free rate
+    nifty = yf.Ticker("^NSEI")   # Symbol for NIFTY 50
+    nifty_price = round(nifty.history(period="1d")["Close"].iloc[-1],2)
+    print("NIFTY Price:", nifty_price)
+
+    today = datetime.today()
+
     hedge_exposure = total_value * portfolio_beta * (hedge_percentage / 100)
+    monthly_expiry_date = get_monthly_expiry()
+    quarterly_expiry_date = get_quarterly_expiry()
+    annual_expiry_date = get_annual_expiry()
+    #  Monthly strike: always in 100s
+    monthly_strike = math.floor(nifty_price / 100) * 100
+    print("monthly_expiry_date:", monthly_expiry_date)
+    # Quarterly strike: based on expiry month``
+    if quarterly_expiry_date.month == 12:
+        quarterly_strike = math.floor(monthly_strike / 1000) * 1000
 
-    monthly_strike = round(hedge_exposure * 0.95)
-    quarterly_strike = round(hedge_exposure * 0.90)
-    annual_strike = round(hedge_exposure * 0.85)
+    else:
+        quarterly_strike = math.floor(monthly_strike / 100) * 100
 
-    monthly_T = 30/365
-    quarterly_T = 90/365
-    annual_T = 365/365
+    # Annual strike: based on expiry month
+    if annual_expiry_date.month == 12:
+        annual_strike = math.floor(monthly_strike / 1000) * 1000
 
-    monthly_cost = black_scholes_put_price(hedge_exposure, monthly_strike, monthly_T, r, sigma)
-    quarterly_cost = black_scholes_put_price(hedge_exposure, quarterly_strike, quarterly_T, r, sigma)
-    annual_cost = black_scholes_put_price(hedge_exposure, annual_strike, annual_T, r, sigma)
+    else:
+        annual_strike = math.floor(monthly_strike / 100) * 100
 
-    monthly_annualized = (monthly_cost / total_value) * (365/30) * 100
-    quarterly_annualized = (quarterly_cost / total_value) * (365/90) * 100
-    annual_annualized = (annual_cost / total_value) * 100
+    monthly_T = (monthly_expiry_date - today).days / 365
+    quarterly_T = (quarterly_expiry_date - today).days / 365
+    annual_T = (annual_expiry_date  - today).days / 365
+
+
+    Monthly_put_premium = fetch_put_premium("NIFTY", monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
+    quarterly_put_premium = fetch_put_premium("NIFTY", quarterly_strike , quarterly_expiry_date.strftime("%d-%b-%Y"))
+    annual_put_premium = fetch_put_premium("NIFTY", annual_strike , annual_expiry_date.strftime("%d-%b-%Y"))
+    print("Monthly Put Premium:", Monthly_put_premium)
+    print("Quarterly Put Premium:", quarterly_put_premium)
+    print("Annual Put Premium:", annual_put_premium)    
+    monthly_sigma = get_implied_volatility(monthly_strike,monthly_strike,monthly_T,r,Monthly_put_premium)  # Assumed volatility
+    quarterly_sigma = get_implied_volatility(monthly_strike,quarterly_strike,quarterly_T,r,quarterly_put_premium)  # Assumed volatility
+    annual_sigma = get_implied_volatility(monthly_strike,annual_strike,annual_T,r,annual_put_premium)  # Assumed volatility
+    print("Monthly Implied Volatility:", monthly_sigma)
+    print("Quarterly Implied Volatility:", quarterly_sigma)
+    print("Annual Implied Volatility:", annual_sigma)
+    monthly_lot = math.ceil( hedge_exposure / (monthly_strike * 75))  # NIFTY lot size = 75
+    quarterly_lot = math.ceil(hedge_exposure / (quarterly_strike * 75) )       
+    annual_lot = math.ceil( hedge_exposure / (annual_strike * 75))
+    print("Monthly Lots:", monthly_lot)
+    print("Quarterly Lots:", quarterly_lot)
+    print("Annual Lots:", annual_lot)
+
+    print("----------------------------------------------------------------------------")
+    monthly_cost = Monthly_put_premium * 75 * monthly_lot  # NIFTY lot size = 75
+    quarterly_cost = quarterly_put_premium * 75 * quarterly_lot  # NIFTY lot size = 75
+    annual_cost = annual_put_premium * 75 * annual_lot  # NIFTY lot size = 75
+    print("Monthly Cost:", monthly_cost)
+    print("Quarterly Cost:", quarterly_cost)    
+    print("Annual Cost:", annual_cost)
+
+
+    print("----------------------------------------------------------------------------")
+    Monthly_Annualised_premium = black_scholes_put_price(monthly_strike, monthly_strike, 1, r, monthly_sigma)
+    Quarterly_Annualised_premium = black_scholes_put_price(monthly_strike, quarterly_strike, 1, r, quarterly_sigma)
+    Annual_Annualised_premium = black_scholes_put_price(monthly_strike, annual_strike, 1, r, annual_sigma)
+    print("Monthly Annualised Premium (%):", Monthly_Annualised_premium)
+    print("Quarterly Annualised Premium (%):", Quarterly_Annualised_premium)    
+    print("Annual Annualised Premium (%):", Annual_Annualised_premium)  
+
+    monthly_annualized = (Monthly_Annualised_premium / monthly_strike) *100  #(monthly_cost / total_value) * (365 / (monthly_T * 365)) * 100
+    quarterly_annualized = (Quarterly_Annualised_premium / monthly_strike) *100 
+    annual_annualized = (Annual_Annualised_premium / annual_strike) *100
+    print("Monthly Annualized Cost (%):", monthly_annualized)
+    print("Quarterly Annualized Cost (%):", quarterly_annualized)   
+    print("Annual Annualized Cost (%):", annual_annualized)
 
     scenarios = [-0.2, -0.1, 0, 0.1, 0.2]
     scenario_analysis = []
@@ -115,11 +330,11 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage, r, sigma):
         "monthly_put_strike": monthly_strike,
         "quarterly_put_strike": quarterly_strike,
         "annual_put_strike": annual_strike,
-        "monthly_expiry": (datetime.now() + timedelta(days=30)).strftime("%d-%b-%Y"),
-        "quarterly_expiry": (datetime.now() + timedelta(days=90)).strftime("%d-%b-%Y"),
-        "annual_expiry": (datetime.now() + timedelta(days=365)).strftime("%d-%b-%Y"),
+        "monthly_expiry": monthly_expiry_date.strftime("%d-%b-%Y") ,#(datetime.now() + timedelta(days=30)).strftime("%d-%b-%Y"),
+        "quarterly_expiry": quarterly_expiry_date.strftime("%d-%b-%Y"), # (datetime.now() + timedelta(days=90)).strftime("%d-%b-%Y"),
+        "annual_expiry": annual_expiry_date.strftime("%d-%b-%Y"), #(datetime.now() + timedelta(days=365)).strftime("%d-%b-%Y"),
         "monthly_cost": monthly_cost,
-        "quarterly_cost": quarterly_cost,
+        "quarterly_cost": quarterly_cost, 
         "annual_cost": annual_cost,
         "monthly_annualized_cost": monthly_annualized,
         "quarterly_annualized_cost": quarterly_annualized,
@@ -226,7 +441,7 @@ if portfolio_data is not None:
         portfolio_beta = portfolio_data["WEIGHTED_BETA"].sum()
 
         # Local Hedging
-        hedging_data = calculate_hedging(portfolio_beta, total_value, hedge_percentage, r, sigma)
+        hedging_data = calculate_hedging(portfolio_beta, total_value, hedge_percentage)
 
         # Display Metrics
         st.subheader("🛡️ Protection Details")
@@ -236,14 +451,56 @@ if portfolio_data is not None:
         col3.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
         col4.metric("Hedge Exposure", f"₹{total_value*portfolio_beta*(hedge_percentage/100):,.2f}")
 
-        # Hedging Costs
-        st.subheader("💰 Hedging Costs")
-        for period in ["monthly", "quarterly", "annual"]:
-            st.write(f"**{period.capitalize()}**")
-            st.write(f"Put Strike: ₹{hedging_data[f'{period}_put_strike']}")
-            st.write(f"Expiry: {hedging_data[f'{period}_expiry']}")
-            st.write(f"Cost: ₹{hedging_data[f'{period}_cost']:,.2f}")
-            st.write(f"Annualized: {hedging_data[f'{period}_annualized_cost']:.2f}%")
+       # Hedging Comparison
+        st.subheader("💰 Period Comparison - Monthly vs Quarterly vs Annual")
+
+        # Create comparison dataframe
+        compare_df = pd.DataFrame([
+            {
+                "Period": "Monthly",
+                "Strike (₹)": hedging_data["monthly_put_strike"],
+                "Expiry": hedging_data["monthly_expiry"],
+                "Cost (₹)": round(hedging_data["monthly_cost"], 2),
+                "Annualized Cost (%)": round(hedging_data["monthly_annualized_cost"], 2),
+            },
+            {
+                "Period": "Quarterly",
+                "Strike (₹)": hedging_data["quarterly_put_strike"],
+                "Expiry": hedging_data["quarterly_expiry"],
+                "Cost (₹)": round(hedging_data["quarterly_cost"], 2),
+                "Annualized Cost (%)": round(hedging_data["quarterly_annualized_cost"], 2),
+            },
+            {
+                "Period": "Annual",
+                "Strike (₹)": hedging_data["annual_put_strike"],
+                "Expiry": hedging_data["annual_expiry"],
+                "Cost (₹)": round(hedging_data["annual_cost"], 2),
+                "Annualized Cost (%)": round(hedging_data["annual_annualized_cost"], 2),
+            }
+        ])
+
+        # Highlight the lowest cost period for easy visual comparison
+        def highlight_lowest_cost(row):
+            color = 'background-color: #d1ffd1' if row.name == compare_df["Cost (₹)"].idxmin() else ''
+            return [color] * len(row)
+
+        st.dataframe(
+            compare_df.style.format({
+                "Cost (₹)": "₹{:,.0f}",
+                "Annualized Cost (%)": "{:.2f}%"
+            }).apply(highlight_lowest_cost, axis=1)
+        )
+
+        # Side-by-side key metrics summary
+        st.subheader("📊 Quick Period Stats")
+        col_m, col_q, col_a = st.columns(3)
+
+        col_m.metric("Monthly Cost (₹)", f"{hedging_data['monthly_cost']:,.0f}", 
+                    f"{hedging_data['monthly_annualized_cost']:.2f}% Annualized")
+        col_q.metric("Quarterly Cost (₹)", f"{hedging_data['quarterly_cost']:,.0f}", 
+                    f"{hedging_data['quarterly_annualized_cost']:.2f}% Annualized")
+        col_a.metric("Annual Cost (₹)", f"{hedging_data['annual_cost']:,.0f}", 
+                    f"{hedging_data['annual_annualized_cost']:.2f}% Annualized")
 
         # Scenario Analysis
         st.subheader("🎯 Scenario Analysis")
