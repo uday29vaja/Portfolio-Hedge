@@ -31,7 +31,8 @@ def download_yahoo_adjclose(ticker, start, end):
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat(),
             progress=False,
-            threads=False
+            threads=False,
+            auto_adjust=False,
         )
         if data is None or data.empty:
             return None
