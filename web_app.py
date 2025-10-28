@@ -261,12 +261,22 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     print("Monthly Put Premium:", Monthly_put_premium)
     print("Quarterly Put Premium:", quarterly_put_premium)
     print("Annual Put Premium:", annual_put_premium)    
+   
+
     monthly_sigma = get_implied_volatility(nifty_price,monthly_strike,monthly_T,r,Monthly_put_premium)  # Assumed volatility
     quarterly_sigma = get_implied_volatility(nifty_price,quarterly_strike,quarterly_T,r,quarterly_put_premium)  # Assumed volatility
     annual_sigma = get_implied_volatility(nifty_price,annual_strike,annual_T,r,annual_put_premium)  # Assumed volatility
     print("Monthly Implied Volatility:", monthly_sigma)
     print("Quarterly Implied Volatility:", quarterly_sigma)
     print("Annual Implied Volatility:", annual_sigma)
+
+     # Safe defaults if None
+    if monthly_sigma is None or not isinstance(monthly_sigma, (int, float)):
+        monthly_sigma = 0.15
+    if quarterly_sigma is None or not isinstance(quarterly_sigma, (int, float)):
+        quarterly_sigma = 0.15
+    if annual_sigma is None or not isinstance(annual_sigma, (int, float)):
+        annual_sigma = 0.15
     monthly_lot = math.ceil( hedge_exposure / (monthly_strike * 75))  # NIFTY lot size = 75
     quarterly_lot = math.ceil(hedge_exposure / (quarterly_strike * 75) )       
     annual_lot = math.ceil( hedge_exposure / (annual_strike * 75))
@@ -563,7 +573,7 @@ if portfolio_data is not None:
                                         if not period_data.empty:
                                             st.write(f"**{period} Hedging Scenarios:**")
                                             display_data = period_data.drop('period', axis=1)
-                                            st.dataframe(display_data, use_container_width=True)
+                                            st.dataframe(display_data, width='stretch')
                                 else:
                                     st.info("📊 Scenario analysis data will be available when calculations are complete")
                                 
