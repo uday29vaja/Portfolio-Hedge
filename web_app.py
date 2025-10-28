@@ -35,11 +35,11 @@ def download_yahoo_adjclose(ticker, start, end):
             auto_adjust=True
         )
         if data is None or data.empty:
-            return None
+            return 0
         return data.get("Adj Close") or data.get("Close")
     except Exception as e:
         st.warning(f"Failed to fetch {ticker}: {e}")
-        return None
+        return 0
 
 def compute_beta(stock_series, index_series):
     df = pd.concat([stock_series, index_series], axis=1, join="inner").dropna()
@@ -159,8 +159,14 @@ def get_implied_volatility(S, K, T, r, market_price, tol=1e-6, max_iter=100):
         sigma = max(sigma, 0.001)
     return sigma
 # --- Step 2: Fetch NSE NIFTY put premium ---
-def fetch_put_premium(symbol, strike_price, expiry_date):
-    print(f"Fetching PUT premium for {symbol} Strike: {strike_price} Expiry: {expiry_date}")
+import requests
+import json
+import time
+
+def fetch_option_chain(symbol):
+    """Fetch full option chain JSON once and return parsed data"""
+    print(f"Fetching option chain for {symbol}...")
+
     url_home = "https://www.nseindia.com"
     url_api = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
 
@@ -169,7 +175,6 @@ def fetch_put_premium(symbol, strike_price, expiry_date):
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/127.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.nseindia.com/option-chain",
         "Connection": "keep-alive",
     }
@@ -177,7 +182,6 @@ def fetch_put_premium(symbol, strike_price, expiry_date):
     session = requests.Session()
 
     try:
-        # Step 1: Get session cookies
         home_resp = session.get(url_home, headers=headers, timeout=10)
         if home_resp.status_code != 200:
             print(f"❌ Home page failed: {home_resp.status_code}")
@@ -185,42 +189,41 @@ def fetch_put_premium(symbol, strike_price, expiry_date):
 
         time.sleep(1)
 
-        # Step 2: Fetch Option Chain data
         resp = session.get(url_api, headers=headers, timeout=15)
         if resp.status_code != 200:
             print(f"❌ Option chain failed: {resp.status_code}")
             return None
 
-        # Step 3: Let requests auto-handle gzip/br decompression
         text_data = resp.text.strip()
-
-        if not text_data or not text_data.startswith("{"):
+        if not text_data.startswith("{"):
             print("❌ Invalid or empty JSON response")
             print(text_data[:200])
             return None
 
-        data = json.loads(text_data)
-
-        expiry_str = expiry_date.upper()
-
-        for record in data.get("records", {}).get("data", []):
-            pe = record.get("PE")
-            if (
-                pe
-                and pe.get("strikePrice") == strike_price
-                and pe.get("expiryDate", "").upper() == expiry_str
-            ):
-                last_price = pe.get("lastPrice")
-                print(f"✅ Found {symbol} PUT {strike_price} @ {expiry_str}: {last_price}")
-                return last_price
-
-        print(f"⚠️ No match found for {symbol} PUT {strike_price} @ {expiry_str}")
-        return None
+        return json.loads(text_data)
 
     except Exception as e:
         print("❌ Error fetching JSON:", e)
         return None
 
+
+def fetch_put_premium(data, strike_price, expiry_date):
+    """Extract PUT premium from cached data"""
+    expiry_str = expiry_date.upper()
+
+    for record in data.get("records", {}).get("data", []):
+        pe = record.get("PE")
+        if (
+            pe
+            and pe.get("strikePrice") == strike_price
+            and pe.get("expiryDate", "").upper() == expiry_str
+        ):
+            last_price = pe.get("lastPrice")
+            print(f"✅ Found PUT {strike_price} @ {expiry_str}: {last_price}")
+            return last_price
+
+    print(f"⚠️ No PUT found for strike {strike_price} @ {expiry_str}")
+    return None
 
 def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     print("Calculating Hedging Costs...")
@@ -256,10 +259,14 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     quarterly_T = round( (quarterly_expiry_date  - today).days / 365 ,2)    
     annual_T = round( (annual_expiry_date  - today).days / 365 ,2)
 
+    expiry_data = fetch_option_chain("NIFTY")
+    if expiry_data is None:
+        print("❌ Failed to fetch option chain data.")
+        return None
 
-    Monthly_put_premium = fetch_put_premium("NIFTY", monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
-    quarterly_put_premium = fetch_put_premium("NIFTY", quarterly_strike , quarterly_expiry_date.strftime("%d-%b-%Y"))
-    annual_put_premium = fetch_put_premium("NIFTY", annual_strike , annual_expiry_date.strftime("%d-%b-%Y"))
+    Monthly_put_premium = fetch_put_premium(expiry_data, monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
+    quarterly_put_premium = fetch_put_premium(expiry_data, quarterly_strike , quarterly_expiry_date.strftime("%d-%b-%Y"))
+    annual_put_premium = fetch_put_premium(expiry_data, annual_strike , annual_expiry_date.strftime("%d-%b-%Y"))
     print("Monthly Put Premium:", Monthly_put_premium)
     print("Quarterly Put Premium:", quarterly_put_premium)
     print("Annual Put Premium:", annual_put_premium)    
@@ -287,9 +294,9 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     print("Annual Lots:", annual_lot)
 
     print("----------------------------------------------------------------------------")
-    monthly_cost = Monthly_put_premium * 75 * monthly_lot  # NIFTY lot size = 75
-    quarterly_cost = quarterly_put_premium * 75 * quarterly_lot  # NIFTY lot size = 75
-    annual_cost = annual_put_premium * 75 * annual_lot  # NIFTY lot size = 75
+    monthly_cost = round( Monthly_put_premium * 75 * monthly_lot ,2) # NIFTY lot size = 75
+    quarterly_cost = round( quarterly_put_premium * 75 * quarterly_lot ,2)
+    annual_cost = round( annual_put_premium * 75 * annual_lot ,2)
     print("Monthly Cost:", monthly_cost)
     print("Quarterly Cost:", quarterly_cost)    
     print("Annual Cost:", annual_cost)
@@ -349,15 +356,15 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
         "monthly_cost": monthly_cost,
         "quarterly_cost": quarterly_cost, 
         "annual_cost": annual_cost,
-        "monthly_annualized_cost": monthly_annualized,
-        "quarterly_annualized_cost": quarterly_annualized,
-        "annual_annualized_cost": annual_annualized,
+        "monthly_annualized_cost": round(monthly_annualized,2),
+        "quarterly_annualized_cost": round(quarterly_annualized,2),
+        "annual_annualized_cost": round(annual_annualized,2),
         "monthly_lots": monthly_lot,
         "quarterly_lots": quarterly_lot,    
         "annual_lots": annual_lot,
-        "monthly_premium": Monthly_put_premium,
-        "quarterly_premium": quarterly_put_premium, 
-        "annual_premium": annual_put_premium,
+        "monthly_premium": round(Monthly_put_premium,2),
+        "quarterly_premium": round(quarterly_put_premium,2), 
+        "annual_premium": round(annual_put_premium,2),
         "scenario_analysis": scenario_analysis
     }
 
@@ -473,7 +480,7 @@ if portfolio_data is not None:
             try:
                 # Convert AMOUNT to numbers
                 portfolio_data["AMOUNT"] = pd.to_numeric(portfolio_data["AMOUNT"], errors='coerce')
-                
+                print("Portfolio Data after conversion:", portfolio_data)
                 if portfolio_data["AMOUNT"].isna().any():
                     st.error("❌ Some AMOUNT values are not valid numbers.")
                 else:
@@ -484,7 +491,7 @@ if portfolio_data is not None:
                             st.error("❌ Total portfolio amount cannot be zero")
                         else:
                             portfolio_data["WEIGHT"] = portfolio_data["AMOUNT"] / total_amount
-
+                            print("Portfolio Data with Weights:", portfolio_data)   
                             # Download index data and calculate beta
                             index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
                             
