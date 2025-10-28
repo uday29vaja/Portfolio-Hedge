@@ -32,7 +32,7 @@ def download_yahoo_adjclose(ticker, start, end):
             end=(end + timedelta(days=1)).isoformat(),
             progress=False,
             threads=False,
-            auto_adjust=False,
+            auto_adjust=True
         )
         if data is None or data.empty:
             return None
@@ -223,6 +223,7 @@ def fetch_put_premium(symbol, strike_price, expiry_date):
 
 
 def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
+    print("Calculating Hedging Costs...")
     r = 0.06  # Risk-free rate
     nifty = yf.Ticker("^NSEI")   # Symbol for NIFTY 50
     nifty_price = round(nifty.history(period="1d")["Close"].iloc[-1],2)
