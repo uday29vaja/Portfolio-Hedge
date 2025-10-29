@@ -97,7 +97,7 @@ def get_monthly_expiry(current_date=None):
         expiry_date = get_last_tuesday(year, next_month)
 
     return expiry_date
-
+ 
 
 # 🔹 Quarterly expiry
 def get_quarterly_expiry(current_date=None):
@@ -162,68 +162,58 @@ def get_implied_volatility(S, K, T, r, market_price, tol=1e-6, max_iter=100):
 import requests
 import json
 import time
+import nsefin
 
-def fetch_option_chain(symbol):
-    """Fetch full option chain JSON once and return parsed data"""
-    print(f"Fetching option chain for {symbol}...")
-
-    url_home = "https://www.nseindia.com"
-    url_api = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/127.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.nseindia.com/option-chain",
-        "Connection": "keep-alive",
-    }
-
-    session = requests.Session()
-
+def fetch_option_chain(symbol: str):
+    """Fetch full option chain data from NSE using nsefin."""
     try:
-        home_resp = session.get(url_home, headers=headers, timeout=20)
-        if home_resp.status_code != 200:
-            print(f"❌ Home page failed: {home_resp.status_code}")
-            return None
-
-        time.sleep(1)
-
-        resp = session.get(url_api, headers=headers, timeout=25)
-        if resp.status_code != 200:
-            print(f"❌ Option chain failed: {resp.status_code}")
-            return None
-
-        text_data = resp.text.strip()
-        if not text_data.startswith("{"):
-            print("❌ Invalid or empty JSON response")
-            print(text_data[:200])
-            return None
-
-        return json.loads(text_data)
-
+        print(f"📡 Fetching option chain for {symbol} via nsefin...")
+        nse = nsefin.NSEClient()
+        option_chain = nse.get_option_chain(symbol)
+        print("✅ Option chain fetched successfully.")
+        return option_chain  # DataFrame
     except Exception as e:
-        print("❌ Error fetching JSON:", e)
+        print("❌ Error fetching option chain:", e)
+        return None
+    
+def fetch_put_premium(df, strike_price, expiry_date):
+    """
+    Extract PUT premium (pe_ltp) for the given strike and expiry.
+    expiry_date format: '25-Nov-2025'
+    """
+    if df is None or df.empty:
+        print("⚠️ Empty option chain data.")
         return None
 
+    expiry_str = expiry_date.strip().upper()
+    strike_price = float(strike_price)
 
-def fetch_put_premium(data, strike_price, expiry_date):
-    """Extract PUT premium from cached data"""
-    expiry_str = expiry_date.upper()
+    # Normalize column names
+    df.columns = [c.strip().lower() for c in df.columns]
 
-    for record in data.get("records", {}).get("data", []):
-        pe = record.get("PE")
-        if (
-            pe
-            and pe.get("strikePrice") == strike_price
-            and pe.get("expiryDate", "").upper() == expiry_str
-        ):
-            last_price = pe.get("lastPrice")
-            print(f"✅ Found PUT {strike_price} @ {expiry_str}: {last_price}")
-            return last_price
+    required_cols = {'strike', 'expiry', 'pe_ltp'}
+    if not required_cols.issubset(df.columns):
+        print("⚠️ Missing expected columns:", df.columns)
+        return None
+
+    # Convert expiry for matching
+    df['expiry'] = df['expiry'].astype(str).str.upper()
+
+    # Filter for matching strike and expiry
+    df_filtered = df[
+        (df['strike'] == strike_price) &
+        (df['expiry'] == expiry_str)
+    ]
+
+    if not df_filtered.empty:
+        last_price = df_filtered.iloc[0]['pe_ltp']
+        print(f"✅ Found PUT {strike_price} @ {expiry_str}: {last_price}")
+        return float(last_price)
 
     print(f"⚠️ No PUT found for strike {strike_price} @ {expiry_str}")
     return None
+# -------------------------------
+# Hedging Calculation
 
 def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     print("Calculating Hedging Costs...")
@@ -263,7 +253,7 @@ def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
     if expiry_data is None:
         print("❌ Failed to fetch option chain data.")
         return None
-
+    
     Monthly_put_premium = fetch_put_premium(expiry_data, monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
     quarterly_put_premium = fetch_put_premium(expiry_data, quarterly_strike , quarterly_expiry_date.strftime("%d-%b-%Y"))
     annual_put_premium = fetch_put_premium(expiry_data, annual_strike , annual_expiry_date.strftime("%d-%b-%Y"))
