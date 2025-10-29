@@ -182,14 +182,14 @@ def fetch_option_chain(symbol):
     session = requests.Session()
 
     try:
-        home_resp = session.get(url_home, headers=headers, timeout=10)
+        home_resp = session.get(url_home, headers=headers, timeout=20)
         if home_resp.status_code != 200:
             print(f"❌ Home page failed: {home_resp.status_code}")
             return None
 
         time.sleep(1)
 
-        resp = session.get(url_api, headers=headers, timeout=15)
+        resp = session.get(url_api, headers=headers, timeout=25)
         if resp.status_code != 200:
             print(f"❌ Option chain failed: {resp.status_code}")
             return None
