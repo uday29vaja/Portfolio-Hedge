@@ -7,6 +7,7 @@ import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
+import urllib3
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
 import io
@@ -14,6 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from scipy.stats import norm
 from math import log, sqrt, exp
+from zeep import Client, Transport
 # -------------------------------
 # Config
 # -------------------------------
@@ -61,302 +63,29 @@ def get_stock_beta(symbol, index_series):
     beta = compute_beta(series, index_series)
     return symbol, beta
 
-def black_scholes_put_price(S, K, T, r, sigma):
-    d1 = (log(S/K) + (r + 0.5*sigma**2)*T) / (sigma * sqrt(T))
-    d2 = d1 - sigma * sqrt(T)
-    return K * exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
-
-
-# 🔹 Common utility
-def get_last_tuesday(year, month):
-    """Return the last Tuesday of a given month."""
-    if month == 12:
-        next_month = datetime(year + 1, 1, 1)
-    else:
-        next_month = datetime(year, month + 1, 1)
-
-    last_day = next_month - timedelta(days=1)
-    while last_day.weekday() != 1:  # Tuesday = 1
-        last_day -= timedelta(days=1)
-    return last_day
-# 🔹 Monthly expiry
-def get_monthly_expiry(current_date=None):
-    """Get last Tuesday of current month (Monthly expiry).
-       If expiry is today or within 1 day, return next month's expiry."""
-    current_date = current_date or datetime.now()
-    expiry_date = get_last_tuesday(current_date.year, current_date.month)
-
-    # Calculate day difference
-    diff_days = (expiry_date.date() - current_date.date()).days
-
-    # If expiry is today (0) or tomorrow (1), roll to next month
-    if diff_days <= 1:
-        next_month = current_date.month + 1
-        year = current_date.year + (1 if next_month > 12 else 0)
-        next_month = (next_month - 1) % 12 + 1  # wrap around
-        expiry_date = get_last_tuesday(year, next_month)
-
-    return expiry_date
- 
-
-# 🔹 Quarterly expiry
-def get_quarterly_expiry(current_date=None):
-    """Get last Tuesday of current or next quarterly month (Mar, Jun, Sep, Dec). 
-       If today is expiry, return next quarter."""
-    current_date = current_date or datetime.now()
-    month = current_date.month
-
-    # Determine current quarter end month
-    if month <= 3:
-        expiry_month = 3
-    elif month <= 6:
-        expiry_month = 6
-    elif month <= 9:
-        expiry_month = 9
-    else:
-        expiry_month = 12
-
-    expiry_date = get_last_tuesday(current_date.year, expiry_month)
-
-    # If expiry is today or already passed, go to next quarter
-    if expiry_date.date() <= current_date.date():
-        if expiry_month == 12:
-            expiry_month = 3
-            year = current_date.year + 1
-        else:
-            expiry_month += 3
-            year = current_date.year
-        expiry_date = get_last_tuesday(year, expiry_month)
-
-    return expiry_date
-
-
-# 🔹 Annual expiry
-def get_annual_expiry(current_date=None):
-    """Get last Tuesday of December (Annual expiry). 
-       If today is expiry, return next year's expiry."""
-    current_date = current_date or datetime.now()
-    year = current_date.year
-    expiry_date = get_last_tuesday(year, 12)
-
-    # If expiry is today or already passed, take next year's
-    if expiry_date.date() <= current_date.date():
-        expiry_date = get_last_tuesday(year + 1, 12)
-
-    return expiry_date
-
-def get_implied_volatility(S, K, T, r, market_price, tol=1e-6, max_iter=100):
-    print("Calculating Implied Volatility...", S, K, T, r, market_price)
-    sigma = 0.2  # initial guess
-    for i in range(max_iter):
-        price = black_scholes_put_price(S, K, T, r, sigma)
-        d1 = (log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
-        vega = S * norm.pdf(d1) * sqrt(T)
-        diff = market_price - price
-        if abs(diff) < tol:
-            return sigma
-        sigma += diff / vega
-        sigma = max(sigma, 0.001)
-    return sigma
-# --- Step 2: Fetch NSE NIFTY put premium ---
-import requests
-import json
-import time
-import nsefin
-
-def fetch_option_chain(symbol: str):
-    """Fetch full option chain data from NSE using nsefin."""
-    try:
-        print(f"📡 Fetching option chain for {symbol} via nsefin...")
-        nse = nsefin.NSEClient()
-        option_chain = nse.get_option_chain(symbol)
-        print("✅ Option chain fetched successfully.")
-        return option_chain  # DataFrame
-    except Exception as e:
-        print("❌ Error fetching option chain:", e)
-        return None
-    
-def fetch_put_premium(df, strike_price, expiry_date):
-    """
-    Extract PUT premium (pe_ltp) for the given strike and expiry.
-    expiry_date format: '25-Nov-2025'
-    """
-    if df is None or df.empty:
-        print("⚠️ Empty option chain data.")
-        return None
-
-    expiry_str = expiry_date.strip().upper()
-    strike_price = float(strike_price)
-
-    # Normalize column names
-    df.columns = [c.strip().lower() for c in df.columns]
-
-    required_cols = {'strike', 'expiry', 'pe_ltp'}
-    if not required_cols.issubset(df.columns):
-        print("⚠️ Missing expected columns:", df.columns)
-        return None
-
-    # Convert expiry for matching
-    df['expiry'] = df['expiry'].astype(str).str.upper()
-
-    # Filter for matching strike and expiry
-    df_filtered = df[
-        (df['strike'] == strike_price) &
-        (df['expiry'] == expiry_str)
-    ]
-
-    if not df_filtered.empty:
-        last_price = df_filtered.iloc[0]['pe_ltp']
-        print(f"✅ Found PUT {strike_price} @ {expiry_str}: {last_price}")
-        return float(last_price)
-
-    print(f"⚠️ No PUT found for strike {strike_price} @ {expiry_str}")
-    return None
-# -------------------------------
-# Hedging Calculation
-
-def calculate_hedging(portfolio_beta, total_value, hedge_percentage):
-    print("Calculating Hedging Costs...")
-    r = 0.06  # Risk-free rate
-    nifty = yf.Ticker("^NSEI")   # Symbol for NIFTY 50
-    nifty_price = round(nifty.history(period="1d")["Close"].iloc[-1],2)
-    print("NIFTY Price:", nifty_price)
-
-    today = datetime.today()
-
-    hedge_exposure = total_value * portfolio_beta * (hedge_percentage / 100)
-    monthly_expiry_date = get_monthly_expiry()
-    quarterly_expiry_date = get_quarterly_expiry()
-    annual_expiry_date = get_annual_expiry()
-    #  Monthly strike: always in 100s
-    monthly_strike = math.floor(nifty_price / 100) * 100
-    print("monthly_expiry_date:", monthly_expiry_date)
-    # Quarterly strike: based on expiry month``
-    if quarterly_expiry_date.month == 12:
-        quarterly_strike = math.floor(monthly_strike / 1000) * 1000
-
-    else:
-        quarterly_strike = math.floor(monthly_strike / 100) * 100
-
-    # Annual strike: based on expiry month
-    if annual_expiry_date.month == 12:
-        annual_strike = math.floor(monthly_strike / 1000) * 1000
-
-    else:
-        annual_strike = math.floor(monthly_strike / 100) * 100
-
-    monthly_T = round( (monthly_expiry_date - today).days / 365 ,2)
-    quarterly_T = round( (quarterly_expiry_date  - today).days / 365 ,2)    
-    annual_T = round( (annual_expiry_date  - today).days / 365 ,2)
-
-    expiry_data = fetch_option_chain("NIFTY")
-    if expiry_data is None:
-        print("❌ Failed to fetch option chain data.")
-        return None
-    
-    Monthly_put_premium = fetch_put_premium(expiry_data, monthly_strike , monthly_expiry_date.strftime("%d-%b-%Y"))
-    quarterly_put_premium = fetch_put_premium(expiry_data, quarterly_strike , quarterly_expiry_date.strftime("%d-%b-%Y"))
-    annual_put_premium = fetch_put_premium(expiry_data, annual_strike , annual_expiry_date.strftime("%d-%b-%Y"))
-    print("Monthly Put Premium:", Monthly_put_premium)
-    print("Quarterly Put Premium:", quarterly_put_premium)
-    print("Annual Put Premium:", annual_put_premium)    
-   
-
-    monthly_sigma = get_implied_volatility(nifty_price,monthly_strike,monthly_T,r,Monthly_put_premium)  # Assumed volatility
-    quarterly_sigma = get_implied_volatility(nifty_price,quarterly_strike,quarterly_T,r,quarterly_put_premium)  # Assumed volatility
-    annual_sigma = get_implied_volatility(nifty_price,annual_strike,annual_T,r,annual_put_premium)  # Assumed volatility
-    print("Monthly Implied Volatility:", monthly_sigma)
-    print("Quarterly Implied Volatility:", quarterly_sigma)
-    print("Annual Implied Volatility:", annual_sigma)
-
-     # Safe defaults if None
-    if monthly_sigma is None or not isinstance(monthly_sigma, (int, float)):
-        monthly_sigma = 0.15
-    if quarterly_sigma is None or not isinstance(quarterly_sigma, (int, float)):
-        quarterly_sigma = 0.15
-    if annual_sigma is None or not isinstance(annual_sigma, (int, float)):
-        annual_sigma = 0.15
-    monthly_lot = math.ceil( hedge_exposure / (monthly_strike * 75))  # NIFTY lot size = 75
-    quarterly_lot = math.ceil(hedge_exposure / (quarterly_strike * 75) )       
-    annual_lot = math.ceil( hedge_exposure / (annual_strike * 75))
-    print("Monthly Lots:", monthly_lot)
-    print("Quarterly Lots:", quarterly_lot)
-    print("Annual Lots:", annual_lot)
-
-    print("----------------------------------------------------------------------------")
-    monthly_cost = round( Monthly_put_premium * 75 * monthly_lot ,2) # NIFTY lot size = 75
-    quarterly_cost = round( quarterly_put_premium * 75 * quarterly_lot ,2)
-    annual_cost = round( annual_put_premium * 75 * annual_lot ,2)
-    print("Monthly Cost:", monthly_cost)
-    print("Quarterly Cost:", quarterly_cost)    
-    print("Annual Cost:", annual_cost)
-
-
-    print("----------------------------------------------------------------------------")
-    Monthly_Annualised_premium = black_scholes_put_price(nifty_price, monthly_strike, 1, r, monthly_sigma)
-    Quarterly_Annualised_premium = black_scholes_put_price(nifty_price, quarterly_strike, 1, r, quarterly_sigma)
-    Annual_Annualised_premium = black_scholes_put_price(nifty_price, annual_strike, 1, r, annual_sigma)
-    print("Monthly Annualised Premium (%):", Monthly_Annualised_premium)
-    print("Quarterly Annualised Premium (%):", Quarterly_Annualised_premium)    
-    print("Annual Annualised Premium (%):", Annual_Annualised_premium)  
-
-    monthly_annualized = ((Monthly_Annualised_premium - max(monthly_strike - nifty_price,0)) / monthly_strike) *100  #(monthly_cost / total_value) * (365 / (monthly_T * 365)) * 100
-    quarterly_annualized = ((Quarterly_Annualised_premium - max(quarterly_strike - nifty_price,0)) / quarterly_strike) *100   #(quarterly_cost / total_value) * (365 / (quarterly_T * 365)) * 100
-    annual_annualized =  ((Annual_Annualised_premium - max(annual_strike - nifty_price,0)) / annual_strike) *100   #(annual_cost / total_value) * (365 / (annual_T * 365)) * 100
-    print("Monthly Annualized Cost (%):", monthly_annualized)
-    print("Quarterly Annualized Cost (%):", quarterly_annualized)   
-    print("Annual Annualized Cost (%):", annual_annualized)
-
-    scenarios = [-0.2, -0.1, 0, 0.1, 0.2]
-    scenario_analysis = []
-    for pct in scenarios:
-        new_portfolio = total_value * (1 + pct)
-        monthly_payoff = max(0, monthly_strike - new_portfolio)
-        quarterly_payoff = max(0, quarterly_strike - new_portfolio)
-        annual_payoff = max(0, annual_strike - new_portfolio)
-        scenario_analysis.append({
-            "period": "Monthly",
-            "scenario": f"{pct*100:+.0f}%",
-            "end_portfolio": new_portfolio,
-            "put_payoff": monthly_payoff,
-            "net_value_hedge": new_portfolio + monthly_payoff - monthly_cost
-        })
-        scenario_analysis.append({
-            "period": "Quarterly",
-            "scenario": f"{pct*100:+.0f}%",
-            "end_portfolio": new_portfolio,
-            "put_payoff": quarterly_payoff,
-            "net_value_hedge": new_portfolio + quarterly_payoff - quarterly_cost
-        })
-        scenario_analysis.append({
-            "period": "Annual",
-            "scenario": f"{pct*100:+.0f}%",
-            "end_portfolio": new_portfolio,
-            "put_payoff": annual_payoff,
-            "net_value_hedge": new_portfolio + annual_payoff - annual_cost
-        })
-
-    return {
-        "monthly_put_strike": monthly_strike,
-        "quarterly_put_strike": quarterly_strike,
-        "annual_put_strike": annual_strike,
-        "monthly_expiry": monthly_expiry_date.strftime("%d-%b-%Y") ,#(datetime.now() + timedelta(days=30)).strftime("%d-%b-%Y"),
-        "quarterly_expiry": quarterly_expiry_date.strftime("%d-%b-%Y"), # (datetime.now() + timedelta(days=90)).strftime("%d-%b-%Y"),
-        "annual_expiry": annual_expiry_date.strftime("%d-%b-%Y"), #(datetime.now() + timedelta(days=365)).strftime("%d-%b-%Y"),
-        "monthly_cost": monthly_cost,
-        "quarterly_cost": quarterly_cost, 
-        "annual_cost": annual_cost,
-        "monthly_annualized_cost": round(monthly_annualized,2),
-        "quarterly_annualized_cost": round(quarterly_annualized,2),
-        "annual_annualized_cost": round(annual_annualized,2),
-        "monthly_lots": monthly_lot,
-        "quarterly_lots": quarterly_lot,    
-        "annual_lots": annual_lot,
-        "monthly_premium": round(Monthly_put_premium,2),
-        "quarterly_premium": round(quarterly_put_premium,2), 
-        "annual_premium": round(annual_put_premium,2),
-        "scenario_analysis": scenario_analysis
-    }
+def get_nav_data( scheme_code):
+        """Get historical NAV data for a scheme"""
+        try:
+            url = f"https://api.mfapi.in/mf/{scheme_code}"
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and data['data']:
+                    df = pd.DataFrame(data['data'])
+                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                    df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
+                    df.set_index('date', inplace=True)
+                    df = df.sort_index().dropna()
+                    
+                    # Filter for last 2 years
+                    two_years_ago = datetime.now() - timedelta(days=730)
+                    df = df[df.index >= two_years_ago]
+                    
+                    return df['nav']
+            return None
+        except Exception as e:
+            print(f"❌ Error fetching NAV for {scheme_code}: {e}")
+            return None
 
 # Excel Export
 def create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage):
@@ -400,44 +129,521 @@ def create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amou
 
     return wb
 
+# Disable SSL warnings for localhost only
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+#fetch data from API
+def Get_hedge_data(portfolio_beta, total_value, hedge_percentage):
+    print("Fetching hedging data from local API...")
+
+    # Disable SSL warnings (for self-signed localhost certs)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Prepare a session that ignores SSL certificate errors
+    session = requests.Session()
+    session.verify = False
+
+    # Pass it to Zeep transport
+    transport = Transport(session=session)
+
+    # Create SOAP client
+    wsdl = "https://localhost:44386/Main/ILTSALGO.asmx?WSDL"
+    client = Client(wsdl=wsdl, transport=transport)
+
+    # Call your web method
+    result = client.service.hedge_calculation(portfolio_beta, total_value, hedge_percentage)
+
+    # Usually result is a JSON string — convert it
+    try:
+        data = json.loads(result)
+    except Exception as e:
+        print("⚠️ Failed to parse JSON:", e)
+        print("Raw result:", result)
+        return None
+
+    print("✅ Hedging data received successfully.")
+    return data
+# Mutual Fund Beta Mapping (Category-based fallback)
+
+def Get_EQSymbol():
+    print("Fetching EQ Symbol from local API...")
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    session = requests.Session()
+    session.verify = False
+    transport = Transport(session=session)
+
+    wsdl = "https://localhost:44386/Main/ILTSALGO.asmx?WSDL"
+    client = Client(wsdl=wsdl, transport=transport)
+
+    result = client.service.Get_EQSymbol()
+
+    try:
+        data = json.loads(result)
+    except Exception as e:
+        print("⚠️ Failed to parse JSON:", e)
+        print("Raw result:", result)
+        return []
+
+    # Extract only SYMBOL values (if available)
+    if isinstance(data, list):
+        symbols = [item["SYMBOL"] for item in data if "SYMBOL" in item]
+        return symbols
+    else:
+        return []
+    
+# -------------------------------
+# Mutual Fund Beta Calculation Functions
+schemes_cache = None
+benchmark_data = None
+    
+def get_all_schemes():
+    """Get all mutual fund schemes with caching"""
+    global schemes_cache
+    if schemes_cache is not None:
+        return schemes_cache
+        
+    try:
+        print("📡 Fetching mutual fund schemes...")
+        url = "https://api.mfapi.in/mf"
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            schemes_cache = response.json()
+            print(f"✅ Loaded {len(schemes_cache)} mutual fund schemes")
+            return schemes_cache
+        return []
+    except Exception as e:
+        print(f"❌ Error fetching schemes: {e}")
+        return []
+
+def find_scheme( scheme_name):
+    """Find scheme by name (flexible matching)"""
+    schemes = get_all_schemes()
+    if not schemes:
+        return None, None
+        
+    # Try exact match first
+    for scheme in schemes:
+        if scheme_name.lower() in scheme['schemeName'].lower():
+            return scheme['schemeCode'], scheme['schemeName']
+            
+    return None, None
+
+def get_nav_data( scheme_code):
+    """Get historical NAV data for a scheme"""
+    try:
+        url = f"https://api.mfapi.in/mf/{scheme_code}"
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and data['data']:
+                df = pd.DataFrame(data['data'])
+                df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
+                df.set_index('date', inplace=True)
+                df = df.sort_index().dropna()
+                
+                # Filter for last 2 years
+                two_years_ago = datetime.now() - timedelta(days=730)
+                df = df[df.index >= two_years_ago]
+                
+                return df['nav']
+        return None
+    except Exception as e:
+        print(f"❌ Error fetching NAV for {scheme_code}: {e}")
+        return None
+
+def get_benchmark_data():
+    """Get Nifty 50 benchmark data - FIXED VERSION"""
+    global benchmark_data
+    if benchmark_data is not None:
+        return benchmark_data
+        
+    try:
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=365)  # 1 years
+        
+        print("📈 Downloading Nifty 50 benchmark data...")
+        nifty_data = yf.download(
+            "^NSEI", 
+            start=start_date.date(), 
+            end=end_date.date(), 
+            auto_adjust=True,
+            progress=False
+        )
+        
+        # FIX: Ensure we get 1D series
+        if isinstance(nifty_data, pd.DataFrame):
+            nifty_series = nifty_data['Close']
+        else:
+            nifty_series = nifty_data
+            
+        # Convert to 1D series if needed
+        if hasattr(nifty_series, 'squeeze'):
+            nifty_series = nifty_series.squeeze()
+        
+        benchmark_data = nifty_series
+        print(f"✅ Nifty data: {len(nifty_series)} points")
+        return nifty_series
+    except Exception as e:
+        print(f"❌ Error downloading benchmark: {e}")
+        return None
+
+def calculate_beta( nav_series, benchmark_series):
+    """Calculate beta between MF and benchmark - FIXED VERSION"""
+    try:
+
+        # FIX: Ensure both are 1D series
+        if hasattr(nav_series, 'squeeze'):
+            nav_series = nav_series.squeeze()
+        if hasattr(benchmark_series, 'squeeze'):
+            benchmark_series = benchmark_series.squeeze()
+        
+        # Convert to DataFrames to align dates properly
+        mf_df = pd.DataFrame({'nav': nav_series})
+        bench_df = pd.DataFrame({'nifty': benchmark_series})
+        
+        # Merge on date index
+        combined = mf_df.merge(bench_df, left_index=True, right_index=True, how='inner')
+        
+        if len(combined) < 60:
+            print(f"   ⚠ Only {len(combined)} common data points")
+            return np.nan
+        
+        # Calculate daily returns
+        returns = combined.pct_change().dropna()
+        
+        if len(returns) < 40:
+            return np.nan
+        
+        # Calculate beta
+        covariance = returns['nav'].cov(returns['nifty'])
+        variance = returns['nifty'].var()
+        
+        beta = covariance / variance if variance != 0 else np.nan
+        return beta
+        
+    except Exception as e:
+        print(f"❌ Beta calculation error: {e}")
+        return np.nan
+
+def calculate_scheme_beta( scheme_name):
+    """
+    Calculate beta for a single mutual fund
+    """
+    print(f"\n🔍 Analyzing: {scheme_name}")
+    
+    # Step 1: Find scheme code
+    scheme_code, full_name = find_scheme(scheme_name)
+    if not scheme_code:
+        print(f"   ❌ Mutual fund not found: {scheme_name}")
+        print(f"   💡 Try using the exact name from the fund house")
+        return {
+            'scheme_name': scheme_name,
+            'full_name': 'N/A',
+            'scheme_code': 'N/A',
+            'beta': 0,
+            'data_points': '0',
+            'status': 'Failed'
+        }
+    
+    print(f"   ✅ Found: {full_name}")
+    
+    # Step 2: Get NAV data
+    nav_data = get_nav_data(scheme_code)
+    if nav_data is None or len(nav_data) < 60:
+        print(f"   ❌ Insufficient NAV data: {len(nav_data) if nav_data else 0} points")
+        return {
+            'scheme_name': scheme_name,
+            'full_name': 'N/A',
+            'scheme_code': 'N/A',
+            'beta': 0,
+            'data_points': '0',
+            'status': 'Failed'
+        }
+    
+    print(f"   📊 NAV data points: {len(nav_data)}")
+    
+    # Step 3: Get benchmark data
+    benchmark_data = get_benchmark_data()
+    if benchmark_data is None or len(benchmark_data) < 60:
+        print("   ❌ Insufficient benchmark data")
+        return {
+            'scheme_name': scheme_name,
+            'full_name': 'N/A',
+            'scheme_code': 'N/A',
+            'beta': 0,
+            'data_points': '0',
+            'status': 'Failed'
+        }
+    
+    # Step 4: Calculate beta
+    beta = calculate_beta(nav_data, benchmark_data)
+    
+    if not np.isnan(beta):
+        print(f"   🎯 Beta: {beta:.4f}")
+        return {
+            'scheme_name': scheme_name,
+            'full_name': full_name,
+            'scheme_code': scheme_code,
+            'beta': round(beta, 4),
+            'data_points': len(nav_data),
+            'status': 'Success'
+        }
+    else:
+        print("   ❌ Could not calculate beta")
+        return {
+            'scheme_name': scheme_name,
+            'full_name': full_name,
+            'scheme_code': scheme_code,
+            'beta': '0',
+            'data_points': len(nav_data) if nav_data else 0,
+            'status': 'Failed'
+        }
+
+def get_beta_for_symbol(symbol, ptype="Stocks"):
+    
+    # Download NIFTY Index data
+    index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
+    if index_series is None or index_series.empty:
+        st.error("❌ Failed to download index data.")
+    else:
+        index_series = index_series.dropna().sort_index()
+
+    if ptype == "Stocks":
+        print(f"Calculating beta for stock: {symbol}")
+        # Use stock beta function
+        sym, beta = get_stock_beta(symbol, index_series)
+        print(f"Beta for {symbol}: {beta}")
+        return sym, beta
+    else:
+        print(f"💼 Calculating beta for mutual fund scheme code: {symbol}")
+        scheme_name = symbol
+        # Calculate beta for this scheme
+        result = calculate_scheme_beta(scheme_name)
+        if result and 'beta' in result:
+            beta = result['beta']
+            print(f"Beta for {symbol}: {beta}")
+            return symbol, beta
+            
+
 # -------------------------------
 # Streamlit App
 # -------------------------------
-st.set_page_config(page_title="Portfolio Beta Calculator", layout="wide")
-st.title("📊 Portfolio Beta & Hedging Calculator (Local, Custom Volatility)")
+st.set_page_config(page_title="Portfolio Beta Calculator", layout="wide")  # 'centered' works better for mobile
 
+st.markdown("<h1>📊 Portfolio Beta & Hedging Calculator</h1>", unsafe_allow_html=True)
+# Custom mobile-friendly CSS
+st.markdown("""
+<style>
+h1, h2, h3, h4, h5, h6 {
+    
+    color: #1E1E1E;
+    font-weight: 700;
+    margin-top: 0.5rem;
+    margin-bottom: 1rem;
+    word-wrap: break-word;
+}
+
+/* Ensure emoji or icons are vertically aligned */
+h1 {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+}
+
+/* Prevent title from shrinking on mobile */
+@media (max-width: 600px) {
+    h1 {
+        font-size: 1.4rem !important;
+        line-height: 1.6rem !important;
+        text-align: center;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# -------------------------------
 # Portfolio Input
+# -------------------------------
+# Load Stock & Mutual Fund Symbols
+# -------------------------------
+nse_symbols = Get_EQSymbol() #pd.read_csv("EQUITY_L.csv")["SYMBOL"].tolist()
+
+# Fetch mutual fund scheme list from MFAPI
+scheme_url = "https://api.mfapi.in/mf"
+try:
+    scheme_resp = requests.get(scheme_url)
+    scheme_resp.raise_for_status()
+    scheme_list = scheme_resp.json()
+    df_schemes = pd.DataFrame(scheme_list)
+    mf_symbols = df_schemes['schemeCode'].tolist()
+    mf_name_map = dict(zip(df_schemes['schemeCode'], df_schemes['schemeName']))
+except Exception as e:
+    st.error(f"Failed to fetch mutual fund list: {e}")
+    mf_symbols = []
+    mf_name_map = {}
+
+# -------------------------------
+# Portfolio Selection
+# -------------------------------
+portfolio_type = st.selectbox("Select Portfolio Type:", ["Stocks", "Mutual Funds"])
+
+# -------------------------------
+# Input Method
+# -------------------------------
 st.header("1. Portfolio Input")
-input_method = st.radio("Choose input method:", ["Manual Entry", "CSV Upload"])
+input_method = st.radio("Choose input method:", ["Manual Entry", "CSV/XLSX Upload"], horizontal=True)
 portfolio_data = None
 
+# -------------------------------
+# Manual Entry
+# -------------------------------
 if input_method == "Manual Entry":
-    
-    st.subheader("Enter Stocks Manually")
-    num_stocks = st.number_input("Number of stocks:", min_value=1, max_value=20, value=3)
-    stocks = []
-    for i in range(num_stocks):
+    st.subheader(f"Enter {portfolio_type} Manually")
+    num_items = st.number_input(f"Number of {portfolio_type}:", min_value=1, max_value=20, value=3)
+    items = []
+
+    for i in range(num_items):
         col1, col2 = st.columns(2)
         with col1:
-            symbol = st.text_input(f"Stock Symbol {i+1}", value="RELIANCE", key=f"sym_{i}")
+            if portfolio_type == "Stocks":
+                symbol = st.selectbox(
+                    f"Select Stock Symbol {i+1}",
+                    options=nse_symbols,
+                    index=nse_symbols.index("RELIANCE") if "RELIANCE" in nse_symbols else 0,
+                    key=f"sym_{i}"
+                )
+                display_name = symbol  # For stocks, symbol is same as display name
+            else:
+                symbol = st.selectbox(
+                    f"Select MF Scheme {i+1}",
+                    options=mf_symbols,
+                    format_func=lambda code: mf_name_map.get(code, code),
+                    key=f"mf_sym_{i}"
+                )
+                display_name = mf_name_map.get(symbol, str(symbol))  # Use readable MF name
+
         with col2:
-            amount = st.number_input(f"Investment Amount (₹) {i+1}", min_value=0, value=10000, key=f"amt_{i}")
-        stocks.append({"SYMBOL": symbol.upper().replace('.NS', ''), "AMOUNT": amount})
-    portfolio_data = pd.DataFrame(stocks)
-    st.write("Your Portfolio:")
-    st.dataframe(portfolio_data)
+            amount = st.number_input(
+                f"Investment Amount (₹) {i+1}",
+                min_value=0,
+                value=10000,
+                step=1000,
+                key=f"amt_{i}"
+            )
 
+        items.append({
+            "SYMBOL": display_name,  
+            "AMOUNT": amount
+        })
+
+    portfolio_data = pd.DataFrame(items)
+    portfolio_data["TYPE"] = portfolio_type  # Add TYPE column
+
+    st.write(f"Your {portfolio_type} Portfolio:")
+    st.dataframe(portfolio_data, use_container_width=True)
+
+
+# -------------------------------
+# CSV/XLSX Upload
+# -------------------------------
 else:
-    st.subheader("Upload Portfolio CSV")
-    st.info("Your CSV should have columns: SYMBOL, AMOUNT")
+    st.subheader(f"Upload {portfolio_type} Portfolio")
     
-    uploaded_file = st.file_uploader("Choose CSV file", type=['csv'])
+    # Sample CSV
+    if portfolio_type == "Stocks":
+        
+        st.info("Your file should have columns: SYMBOL, AMOUNT")
+        sample_data = pd.DataFrame({
+            "SYMBOL": ["RELIANCE", "INFY"],
+            "AMOUNT": [10000, 15000]
+        })
+        file_name = "sample_stock_portfolio.csv"
+    else:
+        
+        st.info("Your file should have columns: SCHEME_NAME, AMOUNT")
+        sample_data = pd.DataFrame({
+            "SCHEME_NAME": [mf_symbols[0] if mf_symbols else ""],
+            "AMOUNT": [15000]
+        })
+        file_name = "sample_mf_portfolio.csv"
+
+    csv_buffer = io.StringIO()
+    sample_data.to_csv(csv_buffer, index=False)
+    st.download_button(
+        label=f"📥 Download Sample {portfolio_type} CSV",
+        data=csv_buffer.getvalue(),
+        file_name=file_name,
+        mime="text/csv"
+    )
+
+    uploaded_file = st.file_uploader("Choose Portfolio File", type=['csv', 'xlsx'])
+
     if uploaded_file is not None:
-        portfolio_data = pd.read_csv(uploaded_file)
-        st.write("Uploaded Portfolio:")
-        st.dataframe(portfolio_data)
+        if uploaded_file.name.endswith('.csv'):
+            portfolio_data = pd.read_csv(uploaded_file)
+        else:
+            portfolio_data = pd.read_excel(uploaded_file)
+            
+        if "SCHEME_NAME" in portfolio_data.columns and "SYMBOL" not in portfolio_data.columns:
+            portfolio_data.rename(columns={"SCHEME_NAME": "SYMBOL"}, inplace=True)
 
+        portfolio_data["TYPE"] = portfolio_type  # Add TYPE column
 
+        
+        st.write(f"Uploaded {portfolio_type} Portfolio:")
+        valid_rows = []
+        not_found = []
+
+        if portfolio_type == "Mutual Funds":
+            # --- Validate Mutual Fund Schemes ---
+            for _, row in portfolio_data.iterrows():
+                try:
+                    scheme_name = str(row["SYMBOL"]).strip()
+                    if not scheme_name:
+                        continue
+
+                    code, name = find_scheme(scheme_name)
+                    if code:
+                        
+                        valid_rows.append(row)
+                    else:
+                        not_found.append(scheme_name)
+
+                except Exception as e:
+                    not_found.append(f"{row['SYMBOL']} (Error: {e})")
+
+        elif portfolio_type == "Stocks":
+            # --- Validate Stock Symbols ---
+
+            for _, row in portfolio_data.iterrows():
+                try:
+                    symbol_name = str(row["SYMBOL"]).strip().upper()
+                    if not symbol_name:
+                        continue
+
+                    if symbol_name in nse_symbols:
+                        valid_rows.append(row)
+                    else:
+                        not_found.append(symbol_name)
+
+                except Exception as e:
+                    not_found.append(f"{row['SYMBOL']} (Error: {e})")
+
+        # --- Keep only valid rows ---
+        if valid_rows:
+            portfolio_data = pd.DataFrame(valid_rows)
+        else:
+            portfolio_data = pd.DataFrame(columns=["SYMBOL", "AMOUNT", "TYPE"])
+
+        # --- Show warning for invalid records ---
+        if not_found:
+            st.warning(f"⚠️ The following {portfolio_type} were not found and removed: {', '.join(not_found)}")
+
+        st.dataframe(portfolio_data ,use_container_width=True)
 
 # Hedge Calculation
 if portfolio_data is not None:
@@ -482,142 +688,146 @@ if portfolio_data is not None:
                         else:
                             portfolio_data["WEIGHT"] = portfolio_data["AMOUNT"] / total_amount
                             print("Portfolio Data with Weights:", portfolio_data)   
-                            # Download index data and calculate beta
-                            index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
+                            # # Download index data and calculate beta
+                            # index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
                             
-                            if index_series is None or index_series.empty:
-                                st.error("❌ Failed to download index data.")
+                            # if index_series is None or index_series.empty:
+                            #     st.error("❌ Failed to download index data.")
+                            # else:
+                            #     index_series = index_series.dropna().sort_index()
+
+                            # Calculate betas
+                            betas = []
+                            for sym in portfolio_data["SYMBOL"]:
+                                symbol, beta = get_beta_for_symbol(sym, ptype=portfolio_type)
+                                betas.append((symbol, beta))
+                            
+                            # Merge results
+                            beta_df = pd.DataFrame(betas, columns=["SYMBOL", "BETA"])
+                            merged = pd.merge(portfolio_data, beta_df, on="SYMBOL", how="left")
+                            merged["WEIGHTED_BETA"] = merged["WEIGHT"] * merged["BETA"]
+                            portfolio_beta = merged["WEIGHTED_BETA"].sum()
+
+                            # Local Hedging
+                            hedging_data_tables = Get_hedge_data(portfolio_beta, total_amount, hedge_percentage)
+                            #print("Hedging Data Tables:", hedging_data_tables)
+                            table1 = hedging_data_tables["Table"]
+                            row = table1[0]
+
+                            hedging_data = {
+                                "monthly_expiry": row["Curr_Expiry"].split("T")[0],
+                                "quarterly_expiry": row["Qut_Expiry"].split("T")[0],
+                                "annual_expiry": row["Annual_Expiry"].split("T")[0],
+
+                                "monthly_put_strike": row["Monthly_Strike"],
+                                "quarterly_put_strike": row["Quarterly_Strike"],
+                                "annual_put_strike": row["Annual_Strike"],
+
+                                "monthly_cost": row["M_totHedgeCost"],
+                                "quarterly_cost": row["Q_totHedgeCost"],
+                                "annual_cost": row["A_totHedgeCost"],
+
+                                "monthly_annualized_cost": row["M_costPer"],
+                                "quarterly_annualized_cost": row["Q_costPer"],
+                                "annual_annualized_cost": row["A_costPer"],
+
+                                "monthly_lots": row["MLot"],
+                                "quarterly_lots": row["Qlot"],
+                                "annual_lots": row["ALot"],
+
+                                "monthly_premium": row["M_Premium"],
+                                "quarterly_premium": row["Q_Premium"],
+                                "annual_premium": row["A_Premium"]
+                            }
+
+                            # Display Results
+                            st.header("3. Advanced Hedging Results")
+                            st.success("✅ Calculation Complete!")
+                            
+                            # Protection Level Info
+                            st.subheader("🛡️ Protection Details")
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Total Portfolio Value", f"₹{total_amount:,.2f}")
+                            with col2:
+                                st.metric("Hedge Percentage", f"{hedge_percentage}%")
+                            with col3:
+                                st.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
+                            with col4:
+                                st.metric("Hedge Exposure", f"₹{total_amount * portfolio_beta * (hedge_percentage/100):,.2f}")
+                            
+                            # hedging cost metrics
+                            st.subheader("💰 Hedging Costs & Details")
+
+                            col1, col2, col3 = st.columns(3)
+
+                            # 🗓️ Monthly
+                            with col1:
+                                st.markdown("#### 🗓️ Monthly")
+                                st.metric("Put Strike (₹)", f"{hedging_data['monthly_put_strike']:,}")
+                                st.metric("Expiry", hedging_data['monthly_expiry'])
+                                st.metric("Cost", f"₹{hedging_data['monthly_cost']:,.2f}")
+                                st.metric("Annualized Cost %", f"{hedging_data['monthly_annualized_cost']:.2f}%")
+                                st.metric("Lots Required", hedging_data['monthly_lots'])
+                                st.metric("Premium per Lot", f"₹{hedging_data['monthly_premium']}")
+                            
+                            # 📅 Quarterly
+                            with col2:
+                                st.markdown("#### 📅 Quarterly")
+                                st.metric("Put Strike (₹)", f"{hedging_data['quarterly_put_strike']:,}")
+                                st.metric("Expiry", hedging_data['quarterly_expiry'])
+                                st.metric("Cost", f"₹{hedging_data['quarterly_cost']:,.2f}")
+                                st.metric("Annualized Cost %", f"{hedging_data['quarterly_annualized_cost']:.2f}%")
+                                st.metric("Lots Required", hedging_data['quarterly_lots'])
+                                st.metric("Premium per Lot", f"₹{hedging_data['quarterly_premium']}")
+                                                        
+                            # 🗓️ Annual
+                            with col3:
+                                st.markdown("#### 🗓️ Annual")
+                                st.metric("Put Strike (₹)", f"{hedging_data['annual_put_strike']:,}")
+                                st.metric("Expiry", hedging_data['annual_expiry'])
+                                st.metric("Cost", f"₹{hedging_data['annual_cost']:,.2f}")
+                                st.metric("Annualized Cost %", f"{hedging_data['annual_annualized_cost']:.2f}%")
+                                st.metric("Lots Required", hedging_data['annual_lots'])
+                                st.metric("Premium per Lot", f"₹{hedging_data['annual_premium']}")
+
+
+                            # Portfolio Breakdown
+                            st.subheader("📈 Portfolio Breakdown")
+                            st.dataframe(merged)
+                            
+                            table2 = hedging_data_tables["Table1"]
+                            # Check if table2 exists and has data
+                            if table2 is not None and len(table2) > 0:
+                                st.subheader("🎯 Scenario Analysis")
+                                
+                                # Convert to DataFrame if not already
+                                scenario_df = pd.DataFrame(table2)
+                                
+                                # Normalize column names to lowercase
+                                scenario_df.columns = [col.lower() for col in scenario_df.columns]
+                                
+                                # Display by period (match exact case in data)
+                                for period in ['Monthly', 'Quarterly', 'Annual']:  # <-- Capitalized
+                                    period_data = scenario_df[scenario_df['period'] == period]
+                                    if not period_data.empty:
+                                        st.write(f"**{period} Hedging Scenarios:**")
+                                        display_data = period_data.drop('period', axis=1)
+                                        st.dataframe(display_data, width=800)
                             else:
-                                index_series = index_series.dropna().sort_index()
+                                st.info("📊 Scenario analysis data will be available when calculations are complete")
 
-                                # Calculate betas
-                                betas = []
-                                for sym in portfolio_data["SYMBOL"]:
-                                    symbol, beta = get_stock_beta(sym, index_series)
-                                    betas.append((symbol, beta))
-                                
-                                # Merge results
-                                beta_df = pd.DataFrame(betas, columns=["SYMBOL", "BETA"])
-                                merged = pd.merge(portfolio_data, beta_df, on="SYMBOL", how="left")
-                                merged["WEIGHTED_BETA"] = merged["WEIGHT"] * merged["BETA"]
-                                portfolio_beta = merged["WEIGHTED_BETA"].sum()
+                            # Download Options
+                            st.subheader("📥 Download Results")
+                            csv = portfolio_data.to_csv(index=False)
+                            st.download_button("Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
 
-                                # Local Hedging
-                                hedging_data = calculate_hedging(portfolio_beta, total_amount, hedge_percentage)
-
-                                # Display Results
-                                st.header("3. Advanced Hedging Results")
-                                st.success("✅ Calculation Complete!")
-                                
-                                # Protection Level Info
-                                st.subheader("🛡️ Protection Details")
-                                col1, col2, col3, col4 = st.columns(4)
-                                with col1:
-                                    st.metric("Total Portfolio Value", f"₹{total_amount:,.2f}")
-                                with col2:
-                                    st.metric("Hedge Percentage", f"{hedge_percentage}%")
-                                with col3:
-                                    st.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
-                                with col4:
-                                    st.metric("Hedge Exposure", f"₹{total_amount * portfolio_beta * (hedge_percentage/100):,.2f}")
-                                
-                                # hedging cost metrics
-                                st.subheader("💰 Hedging Costs & Details")
-
-                                col1, col2, col3 = st.columns(3)
-
-                                # 🗓️ Monthly
-                                with col1:
-                                    st.markdown("#### 🗓️ Monthly")
-                                    st.metric("Put Strike (₹)", f"{hedging_data['monthly_put_strike']:,}")
-                                    st.metric("Expiry", hedging_data['monthly_expiry'])
-                                    st.metric("Cost", f"₹{hedging_data['monthly_cost']:,.2f}")
-                                    st.metric("Annualized Cost %", f"{hedging_data['monthly_annualized_cost']:.2f}%")
-                                    st.metric("Lots Required", hedging_data['monthly_lots'])
-                                    st.metric("Premium per Lot", f"₹{hedging_data['monthly_premium']}")
-                                
-                                # 📅 Quarterly
-                                with col2:
-                                    st.markdown("#### 📅 Quarterly")
-                                    st.metric("Put Strike (₹)", f"{hedging_data['quarterly_put_strike']:,}")
-                                    st.metric("Expiry", hedging_data['quarterly_expiry'])
-                                    st.metric("Cost", f"₹{hedging_data['quarterly_cost']:,.2f}")
-                                    st.metric("Annualized Cost %", f"{hedging_data['quarterly_annualized_cost']:.2f}%")
-                                    st.metric("Lots Required", hedging_data['quarterly_lots'])
-                                    st.metric("Premium per Lot", f"₹{hedging_data['quarterly_premium']}")
-                                                            
-                                # 🗓️ Annual
-                                with col3:
-                                    st.markdown("#### 🗓️ Annual")
-                                    st.metric("Put Strike (₹)", f"{hedging_data['annual_put_strike']:,}")
-                                    st.metric("Expiry", hedging_data['annual_expiry'])
-                                    st.metric("Cost", f"₹{hedging_data['annual_cost']:,.2f}")
-                                    st.metric("Annualized Cost %", f"{hedging_data['annual_annualized_cost']:.2f}%")
-                                    st.metric("Lots Required", hedging_data['annual_lots'])
-                                    st.metric("Premium per Lot", f"₹{hedging_data['annual_premium']}")
-
-
-                                # Portfolio Breakdown
-                                st.subheader("📈 Portfolio Breakdown")
-                                st.dataframe(merged)
-
-                                # Scenario Analysis
-                                if hedging_data['scenario_analysis']:
-                                    st.subheader("🎯 Scenario Analysis")
-                                    scenario_df = pd.DataFrame(hedging_data['scenario_analysis'])
-                                    
-                                    # Display by period
-                                    for period in ['Monthly', 'Quarterly', 'Annual']:
-                                        period_data = scenario_df[scenario_df['period'] == period]
-                                        if not period_data.empty:
-                                            st.write(f"**{period} Hedging Scenarios:**")
-                                            display_data = period_data.drop('period', axis=1)
-                                            st.dataframe(display_data, width='stretch')
-                                else:
-                                    st.info("📊 Scenario analysis data will be available when calculations are complete")
-                                
-                                # Download Options
-                                st.subheader("📥 Download Results")
-                                csv = portfolio_data.to_csv(index=False)
-                                st.download_button("Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
-
-                                excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage)
-                                buffer = io.BytesIO()
-                                excel_wb.save(buffer)
-                                buffer.seek(0)
-                                st.download_button("Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
-                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage)
+                            buffer = io.BytesIO()
+                            excel_wb.save(buffer)
+                            buffer.seek(0)
+                            st.download_button("Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
+                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
                 st.error(f"❌ Error during calculation: {e}")   
-
-
-
-# -------------------------------
-# Equity Symbols Reference
-st.header("📋 Equity Symbols Reference")
-
-try:
-    # Check if file exists and load it
-    if os.path.exists("EQUITY_L.csv"):
-        scrips_df = pd.read_csv("EQUITY_L.csv")
-        total_symbols = len(scrips_df)
-        
-        st.success(f"**{total_symbols} equity symbols available**")
-        st.write("Reference list of all available trading symbols")
-        
-        # Download option
-        with open("EQUITY_L.csv", "rb") as file:
-            file_bytes = file.read()
-        
-        st.download_button(
-            label="📥 Download Equity Symbols (CSV)",
-            data=file_bytes,
-            file_name="EQUITY_Symbols.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("Equity symbols file not found - download available when file is present")
-
-except Exception as e:
-    st.info("Equity reference data will be available when the symbols file is present")
 
