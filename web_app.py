@@ -214,7 +214,7 @@ def Get_EQSymbol():
     else:
         return []
     
-    
+  
 # -------------------------------
 # Mutual Fund Beta Calculation Functions
 schemes_cache = None
@@ -240,9 +240,10 @@ def get_all_schemes():
         logger.error (f"❌ Error fetching schemes: {e}")
         return []
 
+
 def find_scheme( scheme_name):
     """Find scheme by name (flexible matching)"""
-    schemes = get_all_schemes()
+    schemes = get_all_schemes_cached()
     if not schemes:
         return None, None
         
@@ -454,7 +455,13 @@ def get_beta_for_symbol(symbol, ptype="Stocks"):
             print(f"Beta for {symbol}: {beta}")
             return symbol, beta
             
+@st.cache_data
+def get_all_schemes_cached():
+    return get_all_schemes()  
 
+@st.cache_data
+def nse_symbols_cached():
+    return Get_EQSymbol()  
 # -------------------------------
 # Page Setup
 # -------------------------------
@@ -531,7 +538,7 @@ st.markdown("<h1>📊 Portfolio Beta & Hedging Calculator</h1>", unsafe_allow_ht
 # -------------------------------
 # Load Data Sources
 # -------------------------------
-nse_symbols = Get_EQSymbol()
+nse_symbols = nse_symbols_cached()
 
 # Load Mutual Fund list from API
 scheme_url = "https://api.mfapi.in/mf"
@@ -570,7 +577,6 @@ selected_tab = st.radio(
 # Manual Entry
 # -------------------------------
 if selected_tab == "✍️ Manual Entry":
-    active_tab = "manual"
     st.markdown(f"#### Enter {portfolio_type} Manually")
     num_items = st.number_input(f"Number of {portfolio_type}:", min_value=1, max_value=20, value=3)
     items = []
@@ -601,13 +607,12 @@ if selected_tab == "✍️ Manual Entry":
     portfolio_data = pd.DataFrame(items)
     portfolio_data["TYPE"] = portfolio_type
     st.markdown("#### Your Portfolio:")
-    st.dataframe(portfolio_data, use_container_width=True)
+    st.dataframe(portfolio_data, width='stretch')
 
 # -------------------------------
 # CSV/XLSX Upload
 # -------------------------------
 if selected_tab == "📤 Upload File":
-    active_tab = "upload"
     st.markdown(f"#### Upload {portfolio_type} Portfolio File")
     # Sample File
     if portfolio_type == "Stocks":
@@ -625,44 +630,45 @@ if selected_tab == "📤 Upload File":
 
     uploaded_file = st.file_uploader("Upload Portfolio CSV/XLSX", type=['csv', 'xlsx'])
     if uploaded_file is not None:
-        if uploaded_file.name.endswith('.csv'):
-            portfolio_data = pd.read_csv(uploaded_file)
-        else:
-            portfolio_data = pd.read_excel(uploaded_file)
+        with st.spinner("Uploading your File ,Please wait few second..."):
+            if uploaded_file.name.endswith('.csv'):
+                portfolio_data = pd.read_csv(uploaded_file)
+            else:
+                portfolio_data = pd.read_excel(uploaded_file)
 
-        if "SCHEME_NAME" in portfolio_data.columns and "SYMBOL" not in portfolio_data.columns:
-            portfolio_data.rename(columns={"SCHEME_NAME": "SYMBOL"}, inplace=True)
+            if "SCHEME_NAME" in portfolio_data.columns and "SYMBOL" not in portfolio_data.columns:
+                portfolio_data.rename(columns={"SCHEME_NAME": "SYMBOL"}, inplace=True)
 
-        portfolio_data["TYPE"] = portfolio_type
-        valid_rows, not_found = [], []
+            portfolio_data["TYPE"] = portfolio_type
+            valid_rows, not_found = [], []
 
-        if portfolio_type == "Mutual Funds":
-            for _, row in portfolio_data.iterrows():
-                scheme_name = str(row["SYMBOL"]).strip()
-                code, name = find_scheme(scheme_name)
-                if code:
-                    valid_rows.append(row)
-                else:
-                    not_found.append(scheme_name)
-        else:
-            for _, row in portfolio_data.iterrows():
-                sym = str(row["SYMBOL"]).upper()
-                if sym in nse_symbols:
-                    valid_rows.append(row)
-                else:
-                    not_found.append(sym)
+            if portfolio_type == "Mutual Funds":
+                for _, row in portfolio_data.iterrows():
+                    scheme_name = str(row["SYMBOL"]).strip()
+                    code, name = find_scheme(scheme_name)
+                    if code:
+                        valid_rows.append(row)
+                    else:
+                        not_found.append(scheme_name)
+            else:
+                for _, row in portfolio_data.iterrows():
+                    sym = str(row["SYMBOL"]).upper()
+                    if sym in nse_symbols:
+                        valid_rows.append(row)
+                    else:
+                        not_found.append(sym)
 
-        if valid_rows:
-            portfolio_data = pd.DataFrame(valid_rows)
-        else:
-            portfolio_data = pd.DataFrame(columns=["SYMBOL", "AMOUNT", "TYPE"])
+            if valid_rows:
+                portfolio_data = pd.DataFrame(valid_rows)
+            else:
+                portfolio_data = pd.DataFrame(columns=["SYMBOL", "AMOUNT", "TYPE"])
 
-        if not_found:
-            st.warning(f"⚠️ The following {portfolio_type} were not found: {', '.join(not_found)}")
+            if not_found:
+                st.warning(f"⚠️ The following {portfolio_type} were not found: {', '.join(not_found)}")
 
-        st.markdown("#### Uploaded Portfolio:")
-        st.dataframe(portfolio_data, use_container_width=True)
-    
+            st.markdown("#### Uploaded Portfolio:")
+            st.dataframe(portfolio_data, width='stretch')
+        
 
 
 # -------------------------------
