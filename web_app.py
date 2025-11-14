@@ -1,5 +1,6 @@
 # web_app_local_dynamic.py - Portfolio Beta & Hedging with Custom Volatility & Risk-Free Rate
 import json
+import logging
 import math
 import os
 import time
@@ -23,6 +24,21 @@ END_DATE = datetime.now(timezone.utc).date()
 START_DATE = END_DATE - timedelta(days=365)
 YAHOO_INDEX_TICKER = "^NSEI"
 
+# Create logs directory
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+# Log file name per day
+log_filename = f"logs/app_{datetime.now().strftime('%Y_%m_%d')}.log"
+
+logging.basicConfig(
+    filename=log_filename,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filemode="a"
+)
+
+logger = logging.getLogger()
 # -------------------------------
 # Helper Functions
 # -------------------------------
@@ -41,6 +57,7 @@ def download_yahoo_adjclose(ticker, start, end):
         return data.get("Adj Close") or data.get("Close")
     except Exception as e:
         st.warning(f"Failed to fetch {ticker}: {e}")
+        logger.error(f"Failed to fetch {ticker}: {e}")
         return 0
 
 def compute_beta(stock_series, index_series):
@@ -85,6 +102,7 @@ def get_nav_data( scheme_code):
             return None
         except Exception as e:
             print(f"❌ Error fetching NAV for {scheme_code}: {e}")
+            logger.error(f"❌ Error fetching NAV for {scheme_code}: {e}")
             return None
 
 # Excel Export
@@ -160,9 +178,12 @@ def Get_hedge_data(portfolio_beta, total_value, hedge_percentage):
     except Exception as e:
         print("⚠️ Failed to parse JSON:", e)
         print("Raw result:", result)
+        logger.error("Failed to parse JSON:", e)
         return None
 
     print("✅ Hedging data received successfully.")
+    logger.info("✅ Hedging data received successfully.")
+
     return data
 # Mutual Fund Beta Mapping (Category-based fallback)
 
@@ -202,7 +223,7 @@ benchmark_data = None
 def get_all_schemes():
     """Get all mutual fund schemes with caching"""
     global schemes_cache
-    if schemes_cache is not None:
+    if isinstance(schemes_cache, pd.Series) and not schemes_cache.empty:
         return schemes_cache
         
     try:
@@ -216,6 +237,7 @@ def get_all_schemes():
         return []
     except Exception as e:
         print(f"❌ Error fetching schemes: {e}")
+        logger.error (f"❌ Error fetching schemes: {e}")
         return []
 
 def find_scheme( scheme_name):
@@ -253,12 +275,13 @@ def get_nav_data( scheme_code):
         return None
     except Exception as e:
         print(f"❌ Error fetching NAV for {scheme_code}: {e}")
+        logger.info(f"❌ Error fetching NAV for {scheme_code}: {e}")
         return None
 
 def get_benchmark_data():
     """Get Nifty 50 benchmark data - FIXED VERSION"""
     global benchmark_data
-    if benchmark_data is not None:
+    if isinstance(benchmark_data, pd.Series) and not benchmark_data.empty:
         return benchmark_data
         
     try:
@@ -289,6 +312,7 @@ def get_benchmark_data():
         return nifty_series
     except Exception as e:
         print(f"❌ Error downloading benchmark: {e}")
+        logger.error(f"❌ Error downloading benchmark: {e}")    
         return None
 
 def calculate_beta( nav_series, benchmark_series):
@@ -334,6 +358,7 @@ def calculate_scheme_beta( scheme_name):
     Calculate beta for a single mutual fund
     """
     print(f"\n🔍 Analyzing: {scheme_name}")
+    logger.info(f"Analyzing: {scheme_name}")    
     
     # Step 1: Find scheme code
     scheme_code, full_name = find_scheme(scheme_name)
@@ -394,6 +419,7 @@ def calculate_scheme_beta( scheme_name):
         }
     else:
         print("   ❌ Could not calculate beta")
+        logger.info("   ❌ Could not calculate beta")
         return {
             'scheme_name': scheme_name,
             'full_name': full_name,
