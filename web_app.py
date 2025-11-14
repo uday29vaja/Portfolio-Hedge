@@ -147,11 +147,12 @@ def Get_hedge_data(portfolio_beta, total_value, hedge_percentage):
     transport = Transport(session=session)
 
     # Create SOAP client
-    wsdl = "https://localhost:44386/Main/ILTSALGO.asmx?WSDL"
+    wsdl = "https://portfoliohedge.finideas.com/PortFolioPayout/PortfolioService.asmx?WSDL"
     client = Client(wsdl=wsdl, transport=transport)
 
     # Call your web method
     result = client.service.hedge_calculation(portfolio_beta, total_value, hedge_percentage)
+    
 
     # Usually result is a JSON string — convert it
     try:
@@ -173,7 +174,7 @@ def Get_EQSymbol():
     session.verify = False
     transport = Transport(session=session)
 
-    wsdl = "https://localhost:44386/Main/ILTSALGO.asmx?WSDL"
+    wsdl = "https://portfoliohedge.finideas.com/PortFolioPayout/PortfolioService.asmx?WSDL"
     client = Client(wsdl=wsdl, transport=transport)
 
     result = client.service.Get_EQSymbol()
@@ -191,6 +192,7 @@ def Get_EQSymbol():
         return symbols
     else:
         return []
+    
     
 # -------------------------------
 # Mutual Fund Beta Calculation Functions
@@ -428,81 +430,122 @@ def get_beta_for_symbol(symbol, ptype="Stocks"):
             
 
 # -------------------------------
-# Streamlit App
+# Page Setup
 # -------------------------------
-st.set_page_config(page_title="Portfolio Beta Calculator", layout="wide")  # 'centered' works better for mobile
+st.set_page_config(page_title="Portfolio Beta & Hedging Calculator", layout="wide", page_icon="📊")
 
-st.markdown("<h1>📊 Portfolio Beta & Hedging Calculator</h1>", unsafe_allow_html=True)
-# Custom mobile-friendly CSS
+# -------------------------------
+# Custom Modern CSS
+# -------------------------------
 st.markdown("""
 <style>
-h1, h2, h3, h4, h5, h6 {
-    
+/* ---------- Global ---------- */
+html, body, [class*="css"]  {
+    font-family: 'Inter', sans-serif;
+    background: linear-gradient(145deg, #f7f8fc, #e9ebf1);
     color: #1E1E1E;
-    font-weight: 700;
-    margin-top: 0.5rem;
-    margin-bottom: 1rem;
-    word-wrap: break-word;
 }
 
-/* Ensure emoji or icons are vertically aligned */
+/* ---------- Header ---------- */
 h1 {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
+    text-align: center;
+    font-weight: 800;
+    color: #222;
+    padding: 1rem 0 0.5rem 0;
+    font-size: 2rem;
 }
 
-/* Prevent title from shrinking on mobile */
-@media (max-width: 600px) {
+h3 {
+    color: #333;
+    font-weight: 700;
+    margin-top: 1rem;
+}
+
+
+
+/* ---------- Inputs ---------- */
+.stSelectbox, .stNumberInput, .stTextInput, .stFileUploader {
+    border-radius: 8px !important;
+}
+
+/* ---------- Buttons ---------- */
+.stDownloadButton button {
+    background-color: #2563eb;
+    color: white;
+    border-radius: 0.6rem;
+    font-weight: 600;
+}
+.stDownloadButton button:hover {
+    background-color: #1d4ed8;
+}
+
+/* ---------- DataFrame ---------- */
+[data-testid="stDataFrame"] {
+    border-radius: 10px;
+    overflow: hidden;
+}
+hr { margin: 0px !important; }
+/* ---------- Responsive ---------- */
+@media (max-width: 768px) {
     h1 {
-        font-size: 1.4rem !important;
-        line-height: 1.6rem !important;
-        text-align: center;
+        font-size: 1.5rem !important;
+    }
+    .card {
+        padding: 1rem;
     }
 }
 </style>
 """, unsafe_allow_html=True)
 
+# -------------------------------
+# App Title
+# -------------------------------
+st.markdown("<h1>📊 Portfolio Beta & Hedging Calculator</h1>", unsafe_allow_html=True)
 
 # -------------------------------
-# Portfolio Input
+# Load Data Sources
 # -------------------------------
-# Load Stock & Mutual Fund Symbols
-# -------------------------------
-nse_symbols = Get_EQSymbol() #pd.read_csv("EQUITY_L.csv")["SYMBOL"].tolist()
+nse_symbols = Get_EQSymbol()
 
-# Fetch mutual fund scheme list from MFAPI
+# Load Mutual Fund list from API
 scheme_url = "https://api.mfapi.in/mf"
 try:
     scheme_resp = requests.get(scheme_url)
     scheme_resp.raise_for_status()
-    scheme_list = scheme_resp.json()
-    df_schemes = pd.DataFrame(scheme_list)
+    df_schemes = pd.DataFrame(scheme_resp.json())
     mf_symbols = df_schemes['schemeCode'].tolist()
     mf_name_map = dict(zip(df_schemes['schemeCode'], df_schemes['schemeName']))
-except Exception as e:
-    st.error(f"Failed to fetch mutual fund list: {e}")
+except Exception:
     mf_symbols = []
     mf_name_map = {}
 
 # -------------------------------
-# Portfolio Selection
+# Portfolio Type Selection
 # -------------------------------
-portfolio_type = st.selectbox("Select Portfolio Type:", ["Stocks", "Mutual Funds"])
+
+portfolio_type = st.radio("💼 Select Portfolio Type:", ["Stocks", "Mutual Funds"], horizontal=True)
+   
 
 # -------------------------------
-# Input Method
+# Input Method Tabs
 # -------------------------------
-st.header("1. Portfolio Input")
-input_method = st.radio("Choose input method:", ["Manual Entry", "CSV/XLSX Upload"], horizontal=True)
+st.markdown("### 1️⃣ Portfolio Input Method")
 portfolio_data = None
+active_tab = None
+# tab_manual, tab_upload = st.tabs(["✍️ Manual Entry", "📤 Upload File"])
+selected_tab = st.radio(
+    "Select Input Mode",
+    ["✍️ Manual Entry", "📤 Upload File"],
+    horizontal=True,
+    key="portfolio_tab"
+)
 
 # -------------------------------
 # Manual Entry
 # -------------------------------
-if input_method == "Manual Entry":
-    st.subheader(f"Enter {portfolio_type} Manually")
+if selected_tab == "✍️ Manual Entry":
+    active_tab = "manual"
+    st.markdown(f"#### Enter {portfolio_type} Manually")
     num_items = st.number_input(f"Number of {portfolio_type}:", min_value=1, max_value=20, value=3)
     items = []
 
@@ -516,185 +559,134 @@ if input_method == "Manual Entry":
                     index=nse_symbols.index("RELIANCE") if "RELIANCE" in nse_symbols else 0,
                     key=f"sym_{i}"
                 )
-                display_name = symbol  # For stocks, symbol is same as display name
+                display_name = symbol
             else:
                 symbol = st.selectbox(
                     f"Select MF Scheme {i+1}",
                     options=mf_symbols,
-                    format_func=lambda code: mf_name_map.get(code, code),
+                    format_func=lambda code: mf_name_map.get(code, str(code)),
                     key=f"mf_sym_{i}"
                 )
-                display_name = mf_name_map.get(symbol, str(symbol))  # Use readable MF name
-
+                display_name = mf_name_map.get(symbol, str(symbol))
         with col2:
-            amount = st.number_input(
-                f"Investment Amount (₹) {i+1}",
-                min_value=0,
-                value=10000,
-                step=1000,
-                key=f"amt_{i}"
-            )
-
-        items.append({
-            "SYMBOL": display_name,  
-            "AMOUNT": amount
-        })
+            amount = st.number_input(f"Investment Amount (₹) {i+1}", min_value=0, value=10000, step=1000, key=f"amt_{i}")
+        items.append({"SYMBOL": display_name, "AMOUNT": amount})
 
     portfolio_data = pd.DataFrame(items)
-    portfolio_data["TYPE"] = portfolio_type  # Add TYPE column
-
-    st.write(f"Your {portfolio_type} Portfolio:")
+    portfolio_data["TYPE"] = portfolio_type
+    st.markdown("#### Your Portfolio:")
     st.dataframe(portfolio_data, use_container_width=True)
-
 
 # -------------------------------
 # CSV/XLSX Upload
 # -------------------------------
-else:
-    st.subheader(f"Upload {portfolio_type} Portfolio")
-    
-    # Sample CSV
+if selected_tab == "📤 Upload File":
+    active_tab = "upload"
+    st.markdown(f"#### Upload {portfolio_type} Portfolio File")
+    # Sample File
     if portfolio_type == "Stocks":
-        
         st.info("Your file should have columns: SYMBOL, AMOUNT")
-        sample_data = pd.DataFrame({
-            "SYMBOL": ["RELIANCE", "INFY"],
-            "AMOUNT": [10000, 15000]
-        })
+        sample_data = pd.DataFrame({"SYMBOL": ["RELIANCE", "INFY"], "AMOUNT": [10000, 15000]})
         file_name = "sample_stock_portfolio.csv"
     else:
-        
         st.info("Your file should have columns: SCHEME_NAME, AMOUNT")
-        sample_data = pd.DataFrame({
-            "SCHEME_NAME": [mf_symbols[0] if mf_symbols else ""],
-            "AMOUNT": [15000]
-        })
+        sample_data = pd.DataFrame({"SCHEME_NAME": [mf_symbols[0] if mf_symbols else ""], "AMOUNT": [15000]})
         file_name = "sample_mf_portfolio.csv"
 
     csv_buffer = io.StringIO()
     sample_data.to_csv(csv_buffer, index=False)
-    st.download_button(
-        label=f"📥 Download Sample {portfolio_type} CSV",
-        data=csv_buffer.getvalue(),
-        file_name=file_name,
-        mime="text/csv"
-    )
+    st.download_button("📥 Download Sample File", csv_buffer.getvalue(), file_name=file_name, mime="text/csv")
 
-    uploaded_file = st.file_uploader("Choose Portfolio File", type=['csv', 'xlsx'])
-
+    uploaded_file = st.file_uploader("Upload Portfolio CSV/XLSX", type=['csv', 'xlsx'])
     if uploaded_file is not None:
         if uploaded_file.name.endswith('.csv'):
             portfolio_data = pd.read_csv(uploaded_file)
         else:
             portfolio_data = pd.read_excel(uploaded_file)
-            
+
         if "SCHEME_NAME" in portfolio_data.columns and "SYMBOL" not in portfolio_data.columns:
             portfolio_data.rename(columns={"SCHEME_NAME": "SYMBOL"}, inplace=True)
 
-        portfolio_data["TYPE"] = portfolio_type  # Add TYPE column
-
-        
-        st.write(f"Uploaded {portfolio_type} Portfolio:")
-        valid_rows = []
-        not_found = []
+        portfolio_data["TYPE"] = portfolio_type
+        valid_rows, not_found = [], []
 
         if portfolio_type == "Mutual Funds":
-            # --- Validate Mutual Fund Schemes ---
             for _, row in portfolio_data.iterrows():
-                try:
-                    scheme_name = str(row["SYMBOL"]).strip()
-                    if not scheme_name:
-                        continue
-
-                    code, name = find_scheme(scheme_name)
-                    if code:
-                        
-                        valid_rows.append(row)
-                    else:
-                        not_found.append(scheme_name)
-
-                except Exception as e:
-                    not_found.append(f"{row['SYMBOL']} (Error: {e})")
-
-        elif portfolio_type == "Stocks":
-            # --- Validate Stock Symbols ---
-
+                scheme_name = str(row["SYMBOL"]).strip()
+                code, name = find_scheme(scheme_name)
+                if code:
+                    valid_rows.append(row)
+                else:
+                    not_found.append(scheme_name)
+        else:
             for _, row in portfolio_data.iterrows():
-                try:
-                    symbol_name = str(row["SYMBOL"]).strip().upper()
-                    if not symbol_name:
-                        continue
+                sym = str(row["SYMBOL"]).upper()
+                if sym in nse_symbols:
+                    valid_rows.append(row)
+                else:
+                    not_found.append(sym)
 
-                    if symbol_name in nse_symbols:
-                        valid_rows.append(row)
-                    else:
-                        not_found.append(symbol_name)
-
-                except Exception as e:
-                    not_found.append(f"{row['SYMBOL']} (Error: {e})")
-
-        # --- Keep only valid rows ---
         if valid_rows:
             portfolio_data = pd.DataFrame(valid_rows)
         else:
             portfolio_data = pd.DataFrame(columns=["SYMBOL", "AMOUNT", "TYPE"])
 
-        # --- Show warning for invalid records ---
         if not_found:
-            st.warning(f"⚠️ The following {portfolio_type} were not found and removed: {', '.join(not_found)}")
+            st.warning(f"⚠️ The following {portfolio_type} were not found: {', '.join(not_found)}")
 
-        st.dataframe(portfolio_data ,use_container_width=True)
+        st.markdown("#### Uploaded Portfolio:")
+        st.dataframe(portfolio_data, use_container_width=True)
+    
 
-# Hedge Calculation
-if portfolio_data is not None:
-    st.header("2. Hedge Settings & Black-Scholes Parameters")
-     # Add Hedge Percentage Selection
-    st.subheader("🛡️ Hedge Protection Level")
+
+# -------------------------------
+# Hedge Calculation Section
+# -------------------------------
+
+if portfolio_data is not None and portfolio_data.shape[0] > 0:
+    st.markdown("<h3>2️⃣ Hedge Settings & Black-Scholes Parameters</h3>", unsafe_allow_html=True)
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Hedge Protection Level
+    st.markdown("### 🛡️ Hedge Protection Level")
     col1, col2 = st.columns(2)
     with col1:
         hedge_percentage = st.selectbox(
-            "How much portfolio do you want to hedge?",
+            "How much of your portfolio do you want to hedge?",
             [100, 75, 50, 25],
             index=0,
             help="Select the percentage of your portfolio exposure you want to protect"
         )
-        st.write(f"**Selected: {hedge_percentage}% protection**")
-    
+        st.write(f"**Selected:** {hedge_percentage}% protection")
+
     with col2:
         st.info(f"""
         **Hedge Percentage Guide:**
-        - **100%**: Full protection (most expensive)
-        - **75%**: Balanced protection
-        - **50%**: Moderate protection  
-        - **25%**: Basic protection (least expensive)
+        - **100%** → Full protection (most expensive)
+        - **75%** → Balanced protection  
+        - **50%** → Moderate protection  
+        - **25%** → Basic protection (least expensive)
         """)
 
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Calculate Button
     if st.button("🚀 Calculate Beta & Hedging", type="primary"):
         if "AMOUNT" not in portfolio_data.columns:
             st.error("❌ Portfolio must have 'AMOUNT' column")
         else:
             try:
-                # Convert AMOUNT to numbers
+                # Convert AMOUNT to numeric
                 portfolio_data["AMOUNT"] = pd.to_numeric(portfolio_data["AMOUNT"], errors='coerce')
-                print("Portfolio Data after conversion:", portfolio_data)
                 if portfolio_data["AMOUNT"].isna().any():
                     st.error("❌ Some AMOUNT values are not valid numbers.")
                 else:
                     with st.spinner("📊 Calculating betas and advanced hedging costs..."):
-                        # Calculate weights and beta
                         total_amount = portfolio_data["AMOUNT"].sum()
                         if total_amount == 0:
                             st.error("❌ Total portfolio amount cannot be zero")
                         else:
                             portfolio_data["WEIGHT"] = portfolio_data["AMOUNT"] / total_amount
-                            print("Portfolio Data with Weights:", portfolio_data)   
-                            # # Download index data and calculate beta
-                            # index_series = download_yahoo_adjclose(YAHOO_INDEX_TICKER, START_DATE, END_DATE)
-                            
-                            # if index_series is None or index_series.empty:
-                            #     st.error("❌ Failed to download index data.")
-                            # else:
-                            #     index_series = index_series.dropna().sort_index()
 
                             # Calculate betas
                             betas = []
@@ -702,132 +694,108 @@ if portfolio_data is not None:
                                 symbol, beta = get_beta_for_symbol(sym, ptype=portfolio_type)
                                 betas.append((symbol, beta))
                             
-                            # Merge results
                             beta_df = pd.DataFrame(betas, columns=["SYMBOL", "BETA"])
                             merged = pd.merge(portfolio_data, beta_df, on="SYMBOL", how="left")
                             merged["WEIGHTED_BETA"] = merged["WEIGHT"] * merged["BETA"]
                             portfolio_beta = merged["WEIGHTED_BETA"].sum()
 
-                            # Local Hedging
                             hedging_data_tables = Get_hedge_data(portfolio_beta, total_amount, hedge_percentage)
-                            #print("Hedging Data Tables:", hedging_data_tables)
+                            
                             table1 = hedging_data_tables["Table"]
                             row = table1[0]
 
+                            # Extract hedging data
                             hedging_data = {
                                 "monthly_expiry": row["Curr_Expiry"].split("T")[0],
                                 "quarterly_expiry": row["Qut_Expiry"].split("T")[0],
                                 "annual_expiry": row["Annual_Expiry"].split("T")[0],
-
                                 "monthly_put_strike": row["Monthly_Strike"],
                                 "quarterly_put_strike": row["Quarterly_Strike"],
                                 "annual_put_strike": row["Annual_Strike"],
-
                                 "monthly_cost": row["M_totHedgeCost"],
                                 "quarterly_cost": row["Q_totHedgeCost"],
                                 "annual_cost": row["A_totHedgeCost"],
-
                                 "monthly_annualized_cost": row["M_costPer"],
                                 "quarterly_annualized_cost": row["Q_costPer"],
                                 "annual_annualized_cost": row["A_costPer"],
-
                                 "monthly_lots": row["MLot"],
                                 "quarterly_lots": row["Qlot"],
                                 "annual_lots": row["ALot"],
-
                                 "monthly_premium": row["M_Premium"],
                                 "quarterly_premium": row["Q_Premium"],
                                 "annual_premium": row["A_Premium"]
                             }
 
-                            # Display Results
-                            st.header("3. Advanced Hedging Results")
+                            # --- Display Results ---
+                            st.markdown("<h3>3️⃣ Advanced Hedging Results</h3>", unsafe_allow_html=True)
+                            st.markdown("<hr>", unsafe_allow_html=True)
                             st.success("✅ Calculation Complete!")
-                            
-                            # Protection Level Info
-                            st.subheader("🛡️ Protection Details")
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("Total Portfolio Value", f"₹{total_amount:,.2f}")
-                            with col2:
-                                st.metric("Hedge Percentage", f"{hedge_percentage}%")
-                            with col3:
-                                st.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
-                            with col4:
-                                st.metric("Hedge Exposure", f"₹{total_amount * portfolio_beta * (hedge_percentage/100):,.2f}")
-                            
-                            # hedging cost metrics
-                            st.subheader("💰 Hedging Costs & Details")
 
+                            # Protection Level Info
+                            st.markdown("### 🧮 Protection Details")
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.metric("Total Portfolio Value", f"₹{total_amount:,.2f}")
+                            col2.metric("Hedge Percentage", f"{hedge_percentage}%")
+                            col3.metric("Portfolio Beta", f"{portfolio_beta:.4f}")
+                            col4.metric("Hedge Exposure", f"₹{total_amount * portfolio_beta * (hedge_percentage/100):,.2f}")
+
+                            # Hedging cost details
+                            st.markdown("### 💰 Hedging Costs Overview")
                             col1, col2, col3 = st.columns(3)
 
-                            # 🗓️ Monthly
                             with col1:
                                 st.markdown("#### 🗓️ Monthly")
-                                st.metric("Put Strike (₹)", f"{hedging_data['monthly_put_strike']:,}")
-                                st.metric("Expiry", hedging_data['monthly_expiry'])
-                                st.metric("Cost", f"₹{hedging_data['monthly_cost']:,.2f}")
-                                st.metric("Annualized Cost %", f"{hedging_data['monthly_annualized_cost']:.2f}%")
-                                st.metric("Lots Required", hedging_data['monthly_lots'])
-                                st.metric("Premium per Lot", f"₹{hedging_data['monthly_premium']}")
-                            
-                            # 📅 Quarterly
+                                st.write(f"**Put Strike:** ₹{hedging_data['monthly_put_strike']:,}")
+                                st.write(f"**Expiry:** {hedging_data['monthly_expiry']}")
+                                st.write(f"**Cost:** ₹{hedging_data['monthly_cost']:,.2f}")
+                                st.write(f"**Annualized Cost:** {hedging_data['monthly_annualized_cost']:.2f}%")
+                                st.write(f"**Lots Required:** {hedging_data['monthly_lots']}")
+                                st.write(f"**Premium per Lot:** ₹{hedging_data['monthly_premium']}")
+
                             with col2:
                                 st.markdown("#### 📅 Quarterly")
-                                st.metric("Put Strike (₹)", f"{hedging_data['quarterly_put_strike']:,}")
-                                st.metric("Expiry", hedging_data['quarterly_expiry'])
-                                st.metric("Cost", f"₹{hedging_data['quarterly_cost']:,.2f}")
-                                st.metric("Annualized Cost %", f"{hedging_data['quarterly_annualized_cost']:.2f}%")
-                                st.metric("Lots Required", hedging_data['quarterly_lots'])
-                                st.metric("Premium per Lot", f"₹{hedging_data['quarterly_premium']}")
-                                                        
-                            # 🗓️ Annual
-                            with col3:
-                                st.markdown("#### 🗓️ Annual")
-                                st.metric("Put Strike (₹)", f"{hedging_data['annual_put_strike']:,}")
-                                st.metric("Expiry", hedging_data['annual_expiry'])
-                                st.metric("Cost", f"₹{hedging_data['annual_cost']:,.2f}")
-                                st.metric("Annualized Cost %", f"{hedging_data['annual_annualized_cost']:.2f}%")
-                                st.metric("Lots Required", hedging_data['annual_lots'])
-                                st.metric("Premium per Lot", f"₹{hedging_data['annual_premium']}")
+                                st.write(f"**Put Strike:** ₹{hedging_data['quarterly_put_strike']:,}")
+                                st.write(f"**Expiry:** {hedging_data['quarterly_expiry']}")
+                                st.write(f"**Cost:** ₹{hedging_data['quarterly_cost']:,.2f}")
+                                st.write(f"**Annualized Cost:** {hedging_data['quarterly_annualized_cost']:.2f}%")
+                                st.write(f"**Lots Required:** {hedging_data['quarterly_lots']}")
+                                st.write(f"**Premium per Lot:** ₹{hedging_data['quarterly_premium']}")
 
+                            with col3:
+                                st.markdown("#### 📆 Annual")
+                                st.write(f"**Put Strike:** ₹{hedging_data['annual_put_strike']:,}")
+                                st.write(f"**Expiry:** {hedging_data['annual_expiry']}")
+                                st.write(f"**Cost:** ₹{hedging_data['annual_cost']:,.2f}")
+                                st.write(f"**Annualized Cost:** {hedging_data['annual_annualized_cost']:.2f}%")
+                                st.write(f"**Lots Required:** {hedging_data['annual_lots']}")
+                                st.write(f"**Premium per Lot:** ₹{hedging_data['annual_premium']}")
 
                             # Portfolio Breakdown
-                            st.subheader("📈 Portfolio Breakdown")
+                            st.markdown("### 📊 Portfolio Breakdown")
                             st.dataframe(merged)
-                            
+
+                            # Scenario Analysis
                             table2 = hedging_data_tables["Table1"]
-                            # Check if table2 exists and has data
-                            if table2 is not None and len(table2) > 0:
-                                st.subheader("🎯 Scenario Analysis")
-                                
-                                # Convert to DataFrame if not already
+                            if table2 and len(table2) > 0:
+                                st.markdown("### 🎯 Scenario Analysis")
                                 scenario_df = pd.DataFrame(table2)
-                                
-                                # Normalize column names to lowercase
                                 scenario_df.columns = [col.lower() for col in scenario_df.columns]
-                                
-                                # Display by period (match exact case in data)
-                                for period in ['Monthly', 'Quarterly', 'Annual']:  # <-- Capitalized
+                                for period in ['Monthly', 'Quarterly', 'Annual']:
                                     period_data = scenario_df[scenario_df['period'] == period]
                                     if not period_data.empty:
                                         st.write(f"**{period} Hedging Scenarios:**")
-                                        display_data = period_data.drop('period', axis=1)
-                                        st.dataframe(display_data, width=800)
-                            else:
-                                st.info("📊 Scenario analysis data will be available when calculations are complete")
+                                        st.dataframe(period_data.drop('period', axis=1))
 
                             # Download Options
-                            st.subheader("📥 Download Results")
+                            st.markdown("### 📥 Download Results")
                             csv = portfolio_data.to_csv(index=False)
-                            st.download_button("Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
+                            st.download_button("⬇️ Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
 
                             excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage)
                             buffer = io.BytesIO()
                             excel_wb.save(buffer)
                             buffer.seek(0)
-                            st.download_button("Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
+                            st.download_button("⬇️ Export Full Excel Report", buffer, "portfolio_hedging.xlsx",
                                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
-                st.error(f"❌ Error during calculation: {e}")   
-
+                st.error(f"❌ Error during calculation: {e}")
