@@ -25,20 +25,22 @@ START_DATE = END_DATE - timedelta(days=365)
 YAHOO_INDEX_TICKER = "^NSEI"
 
 # Create logs directory
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+# Session-based log
+if "logs" not in st.session_state:
+    st.session_state.logs = []
 
-# Log file name per day
-log_filename = f"logs/app_{datetime.now().strftime('%Y_%m_%d')}.log"
+def log(msg, level="INFO"):
+    entry = f"{level}: {msg}"
+    st.session_state.logs.append(entry)
+    print(entry)  # visible in console during local runs
+    # Optional: also log to Python logger
+    if level == "INFO":
+        logging.info(msg)
+    elif level == "WARNING":
+        logging.warning(msg)
+    elif level == "ERROR":
+        logging.error(msg)
 
-logging.basicConfig(
-    filename=log_filename,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    filemode="a"
-)
-
-logger = logging.getLogger()
 # -------------------------------
 # Helper Functions
 # -------------------------------
@@ -57,7 +59,7 @@ def download_yahoo_adjclose(ticker, start, end):
         return data.get("Adj Close") or data.get("Close")
     except Exception as e:
         st.warning(f"Failed to fetch {ticker}: {e}")
-        logger.error(f"Failed to fetch {ticker}: {e}")
+        log(f"Failed to fetch {ticker}: {e}")
         return 0
 
 def compute_beta(stock_series, index_series):
@@ -102,7 +104,7 @@ def get_nav_data( scheme_code):
             return None
         except Exception as e:
             print(f"❌ Error fetching NAV for {scheme_code}: {e}")
-            logger.error(f"❌ Error fetching NAV for {scheme_code}: {e}")
+            log(f"❌ Error fetching NAV for {scheme_code}: {e}")
             return None
 
 # Excel Export
@@ -178,11 +180,11 @@ def Get_hedge_data(portfolio_beta, total_value, hedge_percentage):
     except Exception as e:
         print("⚠️ Failed to parse JSON:", e)
         print("Raw result:", result)
-        logger.error("Failed to parse JSON:", e)
+        log("Failed to parse JSON:", e)
         return None
 
     print("✅ Hedging data received successfully.")
-    logger.info("✅ Hedging data received successfully.")
+    log("✅ Hedging data received successfully.")
 
     return data
 # Mutual Fund Beta Mapping (Category-based fallback)
@@ -237,7 +239,7 @@ def get_all_schemes():
         return []
     except Exception as e:
         print(f"❌ Error fetching schemes: {e}")
-        logger.error (f"❌ Error fetching schemes: {e}")
+        log (f"❌ Error fetching schemes: {e}")
         return []
 
 
@@ -276,7 +278,7 @@ def get_nav_data( scheme_code):
         return None
     except Exception as e:
         print(f"❌ Error fetching NAV for {scheme_code}: {e}")
-        logger.info(f"❌ Error fetching NAV for {scheme_code}: {e}")
+        log(f"❌ Error fetching NAV for {scheme_code}: {e}")
         return None
 
 def get_benchmark_data():
@@ -313,7 +315,7 @@ def get_benchmark_data():
         return nifty_series
     except Exception as e:
         print(f"❌ Error downloading benchmark: {e}")
-        logger.error(f"❌ Error downloading benchmark: {e}")    
+        log(f"❌ Error downloading benchmark: {e}")    
         return None
 
 def calculate_beta( nav_series, benchmark_series):
@@ -359,7 +361,7 @@ def calculate_scheme_beta( scheme_name):
     Calculate beta for a single mutual fund
     """
     print(f"\n🔍 Analyzing: {scheme_name}")
-    logger.info(f"Analyzing: {scheme_name}")    
+    log(f"Analyzing: {scheme_name}")    
     
     # Step 1: Find scheme code
     scheme_code, full_name = find_scheme(scheme_name)
@@ -420,7 +422,7 @@ def calculate_scheme_beta( scheme_name):
         }
     else:
         print("   ❌ Could not calculate beta")
-        logger.info("   ❌ Could not calculate beta")
+        log("   ❌ Could not calculate beta")
         return {
             'scheme_name': scheme_name,
             'full_name': full_name,
@@ -831,3 +833,6 @@ if portfolio_data is not None and portfolio_data.shape[0] > 0:
                                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
                 st.error(f"❌ Error during calculation: {e}")
+with st.expander("📜 View Logs"):
+    for entry in st.session_state.logs:
+        st.text(entry)
