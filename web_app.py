@@ -373,18 +373,18 @@ def get_all_schemes():
         return []
 
 
-def find_scheme( scheme_name):
-    """Find scheme by name (flexible matching)"""
+def find_scheme(scheme_code):
+    """Find scheme by schemeCode"""
     schemes = get_all_schemes_cached()
     if not schemes:
         return None, None
-        
-    # Try exact match first
+
     for scheme in schemes:
-        if scheme_name.lower() in scheme['schemeName'].lower():
+        if str(scheme_code) == str(scheme.get('schemeCode')):
             return scheme['schemeCode'], scheme['schemeName']
-            
+
     return None, None
+
 
 def get_nav_data( scheme_code):
     """Get historical NAV data for a scheme"""
@@ -835,11 +835,11 @@ if selected_tab == "📤 Upload File":
                         not_found.append(f"STOCK ISIN NOT FOUND: {symbol} ({isin})")
 
                 elif item_type == "MF":
-                    code, name = find_scheme(symbol)
+                    code, name = find_scheme(isin)
                     if code:
                         valid_rows.append(row)
                     else:
-                        not_found.append(f"MF NOT FOUND: {symbol}")
+                        not_found.append(f"MF NOT FOUND: {isin}")
 
                 else:
                     not_found.append(f"INVALID TYPE: {symbol}")
