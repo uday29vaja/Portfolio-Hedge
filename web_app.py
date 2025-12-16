@@ -373,7 +373,7 @@ def get_all_schemes():
         return []
 
 
-def find_scheme(scheme_code):
+def find_scheme_name(scheme_code):
     """Find scheme by schemeCode"""
     schemes = get_all_schemes_cached()
     if not schemes:
@@ -385,6 +385,18 @@ def find_scheme(scheme_code):
 
     return None, None
 
+def find_scheme( scheme_name):
+    """Find scheme by name (flexible matching)"""
+    schemes = get_all_schemes_cached()
+    if not schemes:
+        return None, None
+        
+    # Try exact match first
+    for scheme in schemes:
+        if scheme_name.lower() in scheme['schemeName'].lower():
+            return scheme['schemeCode'], scheme['schemeName']
+            
+    return None, None
 
 def get_nav_data( scheme_code):
     """Get historical NAV data for a scheme"""
@@ -579,6 +591,7 @@ def get_beta_for_symbol(symbol, ptype="STOCK"):
         return sym, beta
     else:
         print(f"💼 Calculating beta for mutual fund scheme code: {symbol}")
+        
         scheme_name = symbol
         # Calculate beta for this scheme
         result = calculate_scheme_beta(scheme_name)
@@ -835,8 +848,9 @@ if selected_tab == "📤 Upload File":
                         not_found.append(f"STOCK ISIN NOT FOUND: {symbol} ({isin})")
 
                 elif item_type == "MF":
-                    code, name = find_scheme(isin)
+                    code, name = find_scheme_name(isin)
                     if code:
+                        row["SYMBOL"] = name
                         valid_rows.append(row)
                     else:
                         not_found.append(f"MF NOT FOUND: {isin}")
