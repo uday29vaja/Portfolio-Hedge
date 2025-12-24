@@ -226,7 +226,7 @@ def create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amou
         cell.alignment = center_alignment
         cell.border = border_style
 
-    for i, period in enumerate(["monthly", "quarterly", "annual"], 1):
+    for i, period in enumerate(["annual"], 1):
         ws.cell(row=hedging_start_row + 1 + i, column=1, value=period.capitalize())
         ws.cell(row=hedging_start_row + 1 + i, column=2, value=f"₹{hedging_data[f'{period}_put_strike']}")
         ws.cell(row=hedging_start_row + 1 + i, column=3, value=hedging_data[f'{period}_expiry'])
@@ -327,7 +327,7 @@ def Get_BSESymbol():
     session.verify = False
     transport = Transport(session=session)
 
-    wsdl = "https://localhost:44336/PortFolioPayout/PortfolioService.asmx?WSDL"
+    wsdl = "https://portfoliohedge.finideas.com/PortFolioPayout/PortfolioService.asmx?WSDL"
     client = Client(wsdl=wsdl, transport=transport)
 
     result = client.service.Get_EQSymbol()
@@ -373,18 +373,6 @@ def get_all_schemes():
         return []
 
 
-def find_scheme_name(scheme_code):
-    """Find scheme by schemeCode"""
-    schemes = get_all_schemes_cached()
-    if not schemes:
-        return None, None
-
-    for scheme in schemes:
-        if str(scheme_code) == str(scheme.get('schemeCode')):
-            return scheme['schemeCode'], scheme['schemeName']
-
-    return None, None
-
 def find_scheme( scheme_name):
     """Find scheme by name (flexible matching)"""
     schemes = get_all_schemes_cached()
@@ -398,6 +386,17 @@ def find_scheme( scheme_name):
             
     return None, None
 
+def find_scheme_code(scheme_code):
+    """Find scheme by schemeCode"""
+    schemes = get_all_schemes_cached()
+    if not schemes:
+        return None, None
+
+    for scheme in schemes:
+        if str(scheme_code) == str(scheme.get('schemeCode')):
+            return scheme['schemeCode'], scheme['schemeName']
+
+    return None, None
 def get_nav_data( scheme_code):
     """Get historical NAV data for a scheme"""
     try:
@@ -591,7 +590,6 @@ def get_beta_for_symbol(symbol, ptype="STOCK"):
         return sym, beta
     else:
         print(f"💼 Calculating beta for mutual fund scheme code: {symbol}")
-        
         scheme_name = symbol
         # Calculate beta for this scheme
         result = calculate_scheme_beta(scheme_name)
@@ -728,7 +726,7 @@ if selected_tab == "✍️ Manual Entry":
     # Portfolio Type Selection
     # -------------------------------
 
-    portfolio_type = st.radio("💼 Select Portfolio Type:", ["Stocks", "Mutual Funds"], horizontal=True)
+    portfolio_type = st.radio("💼 Select Portfolio Type:", ["STOCK", "Mutual Funds"], horizontal=True)
     st.markdown(f"#### Enter {portfolio_type} Manually")
     num_items = st.number_input(f"Number of {portfolio_type}:", min_value=1, max_value=20, value=3)
     items = []
@@ -736,7 +734,7 @@ if selected_tab == "✍️ Manual Entry":
     for i in range(num_items):
         col1, col2 = st.columns(2)
         with col1:
-            if portfolio_type == "Stocks":
+            if portfolio_type == "STOCK":
                 # nse_symbols is a dict {ISIN: SYMBOL}
                 isin_options = list(nse_symbols.keys())  # ISIN list
                 symbol_options = [nse_symbols[isin] for isin in isin_options]
@@ -848,12 +846,12 @@ if selected_tab == "📤 Upload File":
                         not_found.append(f"STOCK ISIN NOT FOUND: {symbol} ({isin})")
 
                 elif item_type == "MF":
-                    code, name = find_scheme_name(isin)
+                    code, name = find_scheme_code(isin )
                     if code:
-                        row["SYMBOL"] = name
+                        row["SYMBOL"] = name # use official name
                         valid_rows.append(row)
                     else:
-                        not_found.append(f"MF NOT FOUND: {isin}")
+                        not_found.append(f"MF NOT FOUND: {symbol}")
 
                 else:
                     not_found.append(f"INVALID TYPE: {symbol}")
@@ -982,34 +980,44 @@ if portfolio_data is not None and portfolio_data.shape[0] > 0:
 
                             # Hedging cost details
                             st.markdown("### 💰 Hedging Costs Overview")
-                            col1, col2, col3 = st.columns(3)
+                            st.markdown("#### 📆 Annual")
 
-                            with col1:
-                                st.markdown("#### 🗓️ Monthly")
-                                st.write(f"**Put Strike:** ₹{hedging_data['monthly_put_strike']:,}")
-                                st.write(f"**Expiry:** {hedging_data['monthly_expiry']}")
-                                st.write(f"**Cost:** ₹{hedging_data['monthly_cost']:,.2f}")
-                                st.write(f"**Annualized Cost:** {hedging_data['monthly_annualized_cost']:.2f}%")
-                                st.write(f"**Lots Required:** {hedging_data['monthly_lots']}")
-                                st.write(f"**Premium per Lot:** ₹{hedging_data['monthly_premium']}")
+                            col1, col2, col3,col4,col5,col6 = st.columns(6)
+                            
+                            col1.metric("Put Strike", f"₹{hedging_data['annual_put_strike']:,}")
+                            col2.metric("Expiry", f"{hedging_data['annual_expiry']}")
+                            col3.metric("Cost", f"₹{hedging_data['annual_cost']:,.2f}")
+                            col4.metric("Annualized Cost", f"{hedging_data['annual_annualized_cost']:.2f}%")
+                            col5.metric("Lots Required", f"{hedging_data['annual_lots']}")
+                            col6.metric("Premium per Lot", f"₹{hedging_data['annual_premium']}")
+                            
 
-                            with col2:
-                                st.markdown("#### 📅 Quarterly")
-                                st.write(f"**Put Strike:** ₹{hedging_data['quarterly_put_strike']:,}")
-                                st.write(f"**Expiry:** {hedging_data['quarterly_expiry']}")
-                                st.write(f"**Cost:** ₹{hedging_data['quarterly_cost']:,.2f}")
-                                st.write(f"**Annualized Cost:** {hedging_data['quarterly_annualized_cost']:.2f}%")
-                                st.write(f"**Lots Required:** {hedging_data['quarterly_lots']}")
-                                st.write(f"**Premium per Lot:** ₹{hedging_data['quarterly_premium']}")
+                            # with col1:
+                            #     st.markdown("#### 🗓️ Monthly")
+                            #     st.write(f"**Put Strike:** ₹{hedging_data['monthly_put_strike']:,}")
+                            #     st.write(f"**Expiry:** {hedging_data['monthly_expiry']}")
+                            #     st.write(f"**Cost:** ₹{hedging_data['monthly_cost']:,.2f}")
+                            #     st.write(f"**Annualized Cost:** {hedging_data['monthly_annualized_cost']:.2f}%")
+                            #     st.write(f"**Lots Required:** {hedging_data['monthly_lots']}")
+                            #     st.write(f"**Premium per Lot:** ₹{hedging_data['monthly_premium']}")
 
-                            with col3:
-                                st.markdown("#### 📆 Annual")
-                                st.write(f"**Put Strike:** ₹{hedging_data['annual_put_strike']:,}")
-                                st.write(f"**Expiry:** {hedging_data['annual_expiry']}")
-                                st.write(f"**Cost:** ₹{hedging_data['annual_cost']:,.2f}")
-                                st.write(f"**Annualized Cost:** {hedging_data['annual_annualized_cost']:.2f}%")
-                                st.write(f"**Lots Required:** {hedging_data['annual_lots']}")
-                                st.write(f"**Premium per Lot:** ₹{hedging_data['annual_premium']}")
+                            # with col2:
+                            #     st.markdown("#### 📅 Quarterly")
+                            #     st.write(f"**Put Strike:** ₹{hedging_data['quarterly_put_strike']:,}")
+                            #     st.write(f"**Expiry:** {hedging_data['quarterly_expiry']}")
+                            #     st.write(f"**Cost:** ₹{hedging_data['quarterly_cost']:,.2f}")
+                            #     st.write(f"**Annualized Cost:** {hedging_data['quarterly_annualized_cost']:.2f}%")
+                            #     st.write(f"**Lots Required:** {hedging_data['quarterly_lots']}")
+                            #     st.write(f"**Premium per Lot:** ₹{hedging_data['quarterly_premium']}")
+
+                            # with col3:
+                            #     st.markdown("#### 📆 Annual")
+                            #     st.write(f"**Put Strike:** ₹{hedging_data['annual_put_strike']:,}")
+                            #     st.write(f"**Expiry:** {hedging_data['annual_expiry']}")
+                            #     st.write(f"**Cost:** ₹{hedging_data['annual_cost']:,.2f}")
+                            #     st.write(f"**Annualized Cost:** {hedging_data['annual_annualized_cost']:.2f}%")
+                            #     st.write(f"**Lots Required:** {hedging_data['annual_lots']}")
+                            #     st.write(f"**Premium per Lot:** ₹{hedging_data['annual_premium']}")
 
                             # Portfolio Breakdown
                             st.markdown("### 📊 Portfolio Breakdown")
@@ -1029,12 +1037,17 @@ if portfolio_data is not None and portfolio_data.shape[0] > 0:
                                     lambda col: col.apply(lambda x: f"{x:.2f}")
                                 )
 
-
-                                for period in ['Monthly', 'Quarterly', 'Annual']:
+                                for period in ['Annual']:
                                     period_data = scenario_df[scenario_df['period'] == period]
                                     if not period_data.empty:
                                         st.write(f"**{period} Hedging Scenarios:**")
                                         st.dataframe(period_data.drop('period', axis=1))
+
+                                # for period in ['Monthly', 'Quarterly', 'Annual']:
+                                #     period_data = scenario_df[scenario_df['period'] == period]
+                                #     if not period_data.empty:
+                                #         st.write(f"**{period} Hedging Scenarios:**")
+                                #         st.dataframe(period_data.drop('period', axis=1))
 
                             # Download Options
                             st.markdown("### 📥 Download Results")
