@@ -386,15 +386,20 @@ def find_scheme( scheme_name):
             
     return None, None
 
-def find_scheme_code(scheme_code):
-    """Find scheme by schemeCode"""
+def find_scheme_code(identifier):
+    """Find scheme by schemeCode or ISIN"""
     schemes = get_all_schemes_cached()
     if not schemes:
         return None, None
 
+    identifier = str(identifier).strip()
+
     for scheme in schemes:
-        if str(scheme_code) == str(scheme.get('schemeCode')):
-            return scheme['schemeCode'], scheme['schemeName']
+        scheme_code = str(scheme.get('schemeCode', '')).strip()
+        isin = str(scheme.get('isinGrowth', '')).strip()  # change key if needed
+
+        if identifier == scheme_code or identifier == isin:
+            return scheme.get('schemeCode'), scheme.get('schemeName')
 
     return None, None
 def get_nav_data( scheme_code):
