@@ -23,7 +23,7 @@ from zeep import Client, Transport
 END_DATE = datetime.now(timezone.utc).date()
 START_DATE = END_DATE - timedelta(days=365)
 YAHOO_INDEX_TICKER = "^NSEI"
-
+Access_Token="A9fK3M2ZQ7xP4R8W"
 # Create logs directory
 # Session-based log
 if "logs" not in st.session_state:
@@ -270,7 +270,7 @@ def Get_hedge_data(portfolio_beta, total_value, hedge_percentage):
     print("SOAP client created.")
     print(f"Calling hedge_calculation with Beta: {portfolio_beta}, Total Value: {total_value}, Hedge %: {hedge_percentage}")
     # Call your web method
-    result = client.service.hedge_calculation(portfolio_beta, total_value, hedge_percentage)
+    result = client.service.hedge_calculation(portfolio_beta, total_value, hedge_percentage, Access_Token)
     
 
     # Usually result is a JSON string — convert it
@@ -299,7 +299,7 @@ def Get_EQSymbol():
     wsdl = "https://portfoliohedge.finideas.com/PortFolioPayout/PortfolioService.asmx?WSDL"
     client = Client(wsdl=wsdl, transport=transport)
 
-    result = client.service.Get_EQSymbol()
+    result = client.service.Get_EQSymbol(Access_Token)
 
     try:
         data = json.loads(result)
@@ -330,7 +330,7 @@ def Get_BSESymbol():
     wsdl = "https://portfoliohedge.finideas.com/PortFolioPayout/PortfolioService.asmx?WSDL"
     client = Client(wsdl=wsdl, transport=transport)
 
-    result = client.service.Get_EQSymbol()
+    result = client.service.Get_BSESymbol(Access_Token)
 
     try:
         data = json.loads(result)
@@ -1058,8 +1058,8 @@ if portfolio_data is not None and portfolio_data.shape[0] > 0:
                             st.markdown("### 📥 Download Results")
                             csv = portfolio_data.to_csv(index=False)
                             st.download_button("⬇️ Download Portfolio CSV", csv, "portfolio_results.csv", "text/csv")
-
-                            excel_wb = create_excel_export(portfolio_data, hedging_data, portfolio_beta, total_amount, hedge_percentage)
+                         
+                            excel_wb = create_excel_export(merged, hedging_data, portfolio_beta, total_amount, hedge_percentage)
                             buffer = io.BytesIO()
                             excel_wb.save(buffer)
                             buffer.seek(0)
