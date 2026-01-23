@@ -21,7 +21,7 @@ from zeep import Client, Transport
 # Config
 # -------------------------------
 END_DATE = datetime.now(timezone.utc).date()
-START_DATE = END_DATE - timedelta(days=365*5)
+START_DATE = END_DATE - timedelta(days=365)
 YAHOO_INDEX_TICKER = "^NSEI"
 Access_Token="A9fK3M2ZQ7xP4R8W"
 # Create logs directory
@@ -435,7 +435,7 @@ def get_benchmark_data():
         
     try:
         end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=365*5)  # 5 years
+        start_date = end_date - timedelta(days=365)  # 1 years
         
         print("📈 Downloading Nifty 50 benchmark data...")
         nifty_data = yf.download(
